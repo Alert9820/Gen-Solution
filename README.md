@@ -1,14 +1,26 @@
-# AI Website Chatbot — Final Version
+# Gen Solution — Cloudflare Website AI Receptionist
 
-Features: URL-to-chatbot crawling, sitemap discovery, same-domain links, public PDF extraction, Gemini embeddings/generation, MongoDB knowledge base, semantic retrieval, source links, English/Roman Hinglish, website-only answers, date-aware instructions, responsive iframe widget, admin key, background indexing and health endpoint.
+Final architecture: Cloudflare Worker + MongoDB Atlas + Workers AI. Website crawling, public PDF extraction and knowledge storage do not call Gemini embeddings. Retrieval uses MongoDB text search plus lexical scoring; only the final grounded answer uses Workers AI.
 
-Required env vars: GEMINI_API_KEY, MONGODB_URI, PUBLIC_URL, ADMIN_KEY.
-Optional: GEMINI_CHAT_MODEL=gemini-3.8-flash, GEMINI_EMBED_MODEL=gemini-embedding-001, EMBEDDING_DIM=768, MAX_PAGES=400, MAX_PDFS=100, MAX_CHUNKS=12000, REQUEST_TIMEOUT=20.
+## Environment variables
+- `MONGODB_URI` — MongoDB Atlas connection string
+- `ADMIN_KEY` — private admin key
+- `PUBLIC_URL` — deployed Worker URL, e.g. `https://gen-solution.<subdomain>.workers.dev`
 
-Deploy app.py, requirements.txt and render.yaml to GitHub, create a Render Web Service, add the required environment variables, then deploy. Open the Render URL, enter the client URL and ADMIN_KEY, build, and copy the generated script into the client website.
+The Worker also uses the Cloudflare `AI` binding defined in `wrangler.jsonc`.
 
-MongoDB Atlas is required. The app creates database/collections automatically. Default retrieval uses cosine similarity in Python, so no manual Atlas Vector Search index is required.
+## Deploy
+1. Upload this project to GitHub.
+2. Cloudflare Dashboard → Workers & Pages → Create application → Create Worker / import repository.
+3. Add the three environment variables as secrets/vars.
+4. Deploy.
+5. Open the Worker URL, enter the client website URL + Admin Key, and start the build.
+6. Wait until `done:true` and copy the generated script.
+7. Put that one script before `</body>` on the client website.
 
-Limitations: authentication-only pages, blocked pages, image-only scanned PDFs without OCR, and content hidden entirely behind browser interactions cannot be guaranteed. Normal public WordPress/content sites get broad coverage through sitemap + link crawling + PDF extraction.
-
-Keep all API keys and ADMIN_KEY server-side.
+## Important
+- This version intentionally does NOT use Gemini embeddings.
+- It follows same-domain links and common sitemap/robots discovery.
+- It extracts text from normal public PDFs. Scanned/image-only PDFs require OCR and are not guaranteed.
+- It refuses private/local URLs and answers only from indexed website content.
+- Cloudflare Workers Free currently allows 100,000 requests/day; Workers AI has a 10,000 Neuron/day free allocation. See current Cloudflare limits/pricing before production use.

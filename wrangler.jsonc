@@ -1,0 +1,9 @@
+{
+  "$schema":"node_modules/wrangler/config-schema.json",
+  "name":"gen-solution",
+  "main":"src/index.ts",
+  "compatibility_date":"2026-08-04",
+  "compatibility_flags":["nodejs_compat"],
+  "observability":{"enabled":true},
+  "ai":{"binding":"AI"}
+}
