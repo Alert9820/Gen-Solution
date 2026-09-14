@@ -18,7 +18,6 @@ type Bot = {
   pageCount: number;
   pdfCount: number;
   chunkCount: number;
-  pdfLinks?: number;
 };
 
 type Chunk = {
@@ -41,19 +40,27 @@ type Job = {
   jobId: string;
   botId: string;
   seed: string;
+
   queue: string[];
   visited: string[];
+
   pdfLinks: string[];
-  pdfDone: string[];
-  stage: string;
+
+  sitemapQueue: string[];
+  sitemapSeen: string[];
+
+  stage: "crawl" | "done" | "error";
+
   pages: number;
   pdfs: number;
   chunks: number;
+
   errors: string[];
+
   createdAt: string;
   updatedAt: string;
+
   done: boolean;
-  sitemapLoaded?: boolean;
 };
 
 const DB_NAME = "ai_website_chatbot";
@@ -61,48 +68,71 @@ const DB_NAME = "ai_website_chatbot";
 const MAX_PAGES = 400;
 const MAX_PDFS = 200;
 
-const PAGE_BATCH = 1;
-
 const MAX_CHUNK = 1800;
 const OVERLAP = 250;
 
 const MAX_HTML_BYTES = 5_000_000;
+const MAX_SITEMAP_BYTES = 2_000_000;
 
 const MODEL = "@cf/zai-org/glm-4.7-flash";
 
-const UA = "Gen-Solution-Bot/5.0";
+const UA = "Gen-Solution-Bot/6.0";
 
 let client: MongoClient | undefined;
 let db: Db | undefined;
+
+/* =========================================================
+   BASIC HELPERS
+========================================================= */
 
 function now() {
   return new Date().toISOString();
 }
 
-function id() {
+function makeId() {
   return crypto.randomUUID();
 }
 
-function json(x: any, status = 200) {
-  return new Response(JSON.stringify(x), {
+function json(data: any, status = 200) {
+  return new Response(JSON.stringify(data), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type,x-admin-key"
+      "access-control-allow-headers":
+        "content-type,x-admin-key",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+function html(data: string, status = 200) {
+  return new Response(data, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store"
     }
   });
 }
 
 function admin(req: Request, env: Env) {
   const key = req.headers.get("x-admin-key");
-  const queryKey = new URL(req.url).searchParams.get("key");
+
+  const queryKey = new URL(req.url)
+    .searchParams
+    .get("key");
 
   return (
     !!env.ADMIN_KEY &&
-    (key === env.ADMIN_KEY || queryKey === env.ADMIN_KEY)
+    (key === env.ADMIN_KEY ||
+      queryKey === env.ADMIN_KEY)
   );
 }
+
+/* =========================================================
+   MONGODB
+========================================================= */
 
 async function mongo(uri: string) {
   if (!client) {
@@ -119,354 +149,11 @@ async function mongo(uri: string) {
   return db!;
 }
 
-function cleanUrl(raw: string, base?: string) {
-  try {
-    const u = new URL(raw, base);
-
-    if (!/^https?:$/.test(u.protocol)) {
-      return null;
-    }
-
-    u.hash = "";
-
-    u.hostname = u.hostname.toLowerCase();
-
-    if (u.pathname !== "/") {
-      u.pathname = u.pathname.replace(/\/{2,}/g, "/");
-    }
-
-    return u.toString().replace(/\/$/, "");
-  } catch {
-    return null;
-  }
-}
-
-function host(url: string) {
-  return new URL(url).hostname.toLowerCase();
-}
-
-function sameHost(a: string, b: string) {
-  const x = host(a);
-  const y = host(b);
-
-  return x === y;
-}
-
-function privateHost(h: string) {
-  return /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[0-1])\.|::1|fc|fd)/i.test(
-    h
-  );
-}
-
-function allowed(url: string, seed: string) {
-  try {
-    const u = new URL(url);
-
-    return (
-      /^https?:$/.test(u.protocol) &&
-      !privateHost(u.hostname) &&
-      sameHost(u.href, seed)
-    );
-  } catch {
-    return false;
-  }
-}
-
-function decode(s: string) {
-  return s
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(
-      /&#(\d+);/g,
-      (_, n) => String.fromCharCode(Number(n))
-    )
-    .replace(
-      /&#x([0-9a-f]+);/gi,
-      (_, n) => String.fromCharCode(parseInt(n, 16))
-    );
-}
-
-function stripHtml(html: string) {
-  const title = decode(
-    (
-      html.match(
-        /<title[^>]*>([\s\S]*?)<\/title>/i
-      )?.[1] || ""
-    ).replace(/<[^>]+>/g, " ")
-  )
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 300);
-
-  const cleaned = html
-    .replace(
-      /<(script|style|noscript|template|svg|canvas|iframe)[^>]*>[\s\S]*?<\/\1>/gi,
-      " "
-    )
-    .replace(/<!--[\s\S]*?-->/g, " ");
-
-  const withBreaks = cleaned.replace(
-    /<(br|\/p|\/div|\/li|\/tr|\/h[1-6]|\/section|\/article|\/header|\/footer|\/nav|\/td|\/th)[^>]*>/gi,
-    "\n"
-  );
-
-  const text = decode(
-    withBreaks.replace(/<[^>]+>/g, " ")
-  )
-    .replace(/[\t ]+/g, " ")
-    .replace(/\n\s+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  return {
-    title,
-    text
-  };
-}
-
-function extractLinks(
-  html: string,
-  base: string,
-  seed: string
-) {
-  const out = new Set<string>();
-
-  const re =
-    /<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>/gi;
-
-  let m: RegExpExecArray | null;
-
-  while ((m = re.exec(html))) {
-    const raw = m[1].trim();
-
-    if (
-      /^(mailto:|tel:|javascript:|data:|#)/i.test(
-        raw
-      )
-    ) {
-      continue;
-    }
-
-    const u = cleanUrl(raw, base);
-
-    if (
-      u &&
-      allowed(u, seed) &&
-      !isBinary(u) &&
-      !isPdfUrl(u)
-    ) {
-      out.add(u);
-    }
-  }
-
-  return [...out];
-}
-
-function extractPdfLinks(
-  html: string,
-  base: string,
-  seed: string
-) {
-  const out = new Set<string>();
-
-  const re =
-    /(?:href|data-href|data-url)\s*=\s*["']([^"']+)["']/gi;
-
-  let m: RegExpExecArray | null;
-
-  while ((m = re.exec(html))) {
-    const u = cleanUrl(m[1], base);
-
-    if (
-      u &&
-      allowed(u, seed) &&
-      isPdfUrl(u)
-    ) {
-      out.add(u);
-    }
-  }
-
-  return [...out];
-}
-
-function isPdfUrl(u: string) {
-  return /\.pdf(?:$|[?#])/i.test(u);
-}
-
-function isBinary(u: string) {
-  return /\.(?:jpg|jpeg|png|gif|webp|svg|ico|mp4|mp3|zip|rar|7z|doc|docx|xls|xlsx|ppt|pptx|css|js|woff2?|ttf)(?:$|[?#])/i.test(
-    u
-  );
-}
-
-function pdfTitle(url: string) {
-  try {
-    const u = new URL(url);
-
-    const name =
-      decodeURIComponent(
-        u.pathname.split("/").pop() || "PDF Document"
-      );
-
-    return name
-      .replace(/\.pdf$/i, "")
-      .replace(/[-_]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 200);
-  } catch {
-    return "PDF Document";
-  }
-}
-
-function chunkText(text: string) {
-  const out: string[] = [];
-
-  let i = 0;
-
-  while (i < text.length) {
-    const end = Math.min(
-      text.length,
-      i + MAX_CHUNK
-    );
-
-    let cut = end;
-
-    if (end < text.length) {
-      const p = Math.max(
-        text.lastIndexOf(" ", end),
-        text.lastIndexOf("\n", end)
-      );
-
-      if (p > i + 800) {
-        cut = p;
-      }
-    }
-
-    const t = text.slice(i, cut).trim();
-
-    if (t.length > 60) {
-      out.push(t);
-    }
-
-    if (cut >= text.length) {
-      break;
-    }
-
-    i = Math.max(
-      cut - OVERLAP,
-      i + 1
-    );
-  }
-
-  return out;
-}
-
-function tokens(s: string) {
-  return new Set(
-    (
-      s.toLowerCase().match(
-        /[a-z0-9@._+-]+/g
-      ) || []
-    ).filter((x) => x.length > 1)
-  );
-}
-
-function lexicalScore(
-  q: string,
-  t: string
-) {
-  const a = tokens(q);
-  const b = tokens(t);
-
-  if (!a.size || !b.size) {
-    return 0;
-  }
-
-  let hit = 0;
-
-  for (const x of a) {
-    if (b.has(x)) {
-      hit++;
-    }
-  }
-
-  return hit / a.size;
-}
-
-async function fetchPage(
-  url: string,
-  seed: string
-) {
-  if (!allowed(url, seed)) {
-    throw new Error("blocked URL");
-  }
-
-  const controller = new AbortController();
-
-  const timer = setTimeout(
-    () => controller.abort(),
-    15000
-  );
-
-  try {
-    const r = await fetch(url, {
-      redirect: "follow",
-      signal: controller.signal,
-      headers: {
-        "user-agent": UA,
-        accept:
-          "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
-        "accept-language": "en-US,en;q=0.8"
-      }
-    });
-
-    if (!r.ok) {
-      throw new Error(`HTTP ${r.status}`);
-    }
-
-    if (!allowed(r.url || url, seed)) {
-      throw new Error(
-        "redirected outside website"
-      );
-    }
-
-    return r;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function fetchSmall(
-  url: string
-) {
-  const controller = new AbortController();
-
-  const timer = setTimeout(
-    () => controller.abort(),
-    8000
-  );
-
-  try {
-    return await fetch(url, {
-      redirect: "follow",
-      signal: controller.signal,
-      headers: {
-        "user-agent": UA,
-        accept: "text/plain,application/xml,text/xml,*/*;q=0.5"
-      }
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function ensureIndexes(d: Db) {
   const chunks = d.collection("chunks");
+  const pdfLinks = d.collection("pdfLinks");
+  const bots = d.collection("bots");
+  const jobs = d.collection("jobs");
 
   await chunks
     .createIndex({
@@ -482,8 +169,7 @@ async function ensureIndexes(d: Db) {
     })
     .catch(() => {});
 
-  await d
-    .collection("pdfLinks")
+  await pdfLinks
     .createIndex(
       {
         botId: 1,
@@ -495,8 +181,7 @@ async function ensureIndexes(d: Db) {
     )
     .catch(() => {});
 
-  await d
-    .collection("bots")
+  await bots
     .createIndex(
       {
         botId: 1
@@ -507,8 +192,7 @@ async function ensureIndexes(d: Db) {
     )
     .catch(() => {});
 
-  await d
-    .collection("jobs")
+  await jobs
     .createIndex(
       {
         jobId: 1
@@ -520,621 +204,1073 @@ async function ensureIndexes(d: Db) {
     .catch(() => {});
 }
 
-/*
-  Bounded sitemap discovery.
+/* =========================================================
+   URL SECURITY
+========================================================= */
 
-  Important:
-  Cloudflare Workers Free has a subrequest limit.
-  Therefore we intentionally keep sitemap discovery bounded.
-*/
-async function sitemapUrls(
-  seed: string
+function cleanUrl(
+  raw: string,
+  base?: string
 ) {
-  const candidates = [
-    new URL(
-      "/sitemap.xml",
-      seed
-    ).href,
-    new URL(
-      "/wp-sitemap.xml",
-      seed
-    ).href
-  ];
+  try {
+    const u = new URL(raw, base);
 
-  const discovered = new Set<string>();
-
-  const queue = [
-    ...candidates
-  ];
-
-  const seen = new Set<string>();
-
-  const MAX_SITEMAP_FETCHES = 12;
-
-  let fetchCount = 0;
-
-  while (
-    queue.length &&
-    discovered.size < MAX_PAGES &&
-    fetchCount < MAX_SITEMAP_FETCHES
-  ) {
-    const sitemap = queue.shift()!;
-
-    if (seen.has(sitemap)) {
-      continue;
+    if (!/^https?:$/.test(u.protocol)) {
+      return null;
     }
 
-    seen.add(sitemap);
+    u.hash = "";
 
-    try {
-      const r = await fetchSmall(
-        sitemap
-      );
+    u.hostname =
+      u.hostname.toLowerCase();
 
-      fetchCount++;
-
-      if (!r.ok) {
-        continue;
-      }
-
-      const contentType =
-        (
-          r.headers.get(
-            "content-type"
-          ) || ""
-        ).toLowerCase();
-
-      const text =
-        await r.text();
-
-      /*
-        Only process XML-ish sitemap responses.
-      */
-      if (
-        !contentType.includes("xml") &&
-        !/^\s*<[\s\S]*(urlset|sitemapindex)/i.test(
-          text
-        )
-      ) {
-        continue;
-      }
-
-      for (
-        const x of text.matchAll(
-          /<loc>\s*([^<]+?)\s*<\/loc>/gi
-        )
-      ) {
-        const u = cleanUrl(
-          x[1].trim()
+    if (u.pathname !== "/") {
+      u.pathname =
+        u.pathname.replace(
+          /\/{2,}/g,
+          "/"
         );
-
-        if (
-          !u ||
-          !sameHost(u, seed)
-        ) {
-          continue;
-        }
-
-        if (
-          /sitemap/i.test(u) &&
-          /\.xml(?:$|[?#])/i.test(u)
-        ) {
-          if (
-            !seen.has(u) &&
-            queue.length < 20
-          ) {
-            queue.push(u);
-          }
-
-          continue;
-        }
-
-        if (isPdfUrl(u)) {
-          continue;
-        }
-
-        discovered.add(u);
-
-        if (
-          discovered.size >=
-          MAX_PAGES
-        ) {
-          break;
-        }
-      }
-    } catch {
-      continue;
     }
+
+    return u
+      .toString()
+      .replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function host(url: string) {
+  return new URL(url)
+    .hostname
+    .toLowerCase();
+}
+
+function sameHost(
+  a: string,
+  b: string
+) {
+  const x = host(a);
+  const y = host(b);
+
+  if (x === y) {
+    return true;
   }
 
-  return [...discovered].slice(
-    0,
-    MAX_PAGES
+  /*
+    Treat www.example.com and example.com
+    as the same website.
+  */
+
+  return (
+    x.replace(/^www\./, "") ===
+    y.replace(/^www\./, "")
   );
 }
 
-async function robotsSitemaps(
+function privateHost(h: string) {
+  return /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[0-1])\.|::1|fc|fd)/i.test(
+    h
+  );
+}
+
+function allowed(
+  url: string,
   seed: string
 ) {
   try {
-    const u = new URL(
-      "/robots.txt",
-      seed
+    const u = new URL(url);
+
+    return (
+      /^https?:$/.test(
+        u.protocol
+      ) &&
+      !privateHost(u.hostname) &&
+      sameHost(
+        u.href,
+        seed
+      )
     );
-
-    const r = await fetchSmall(
-      u.href
-    );
-
-    if (!r.ok) {
-      return [];
-    }
-
-    const t =
-      await r.text();
-
-    return t
-      .split(/\r?\n/)
-      .filter((x) =>
-        /^\s*sitemap\s*:/i.test(x)
-      )
-      .map((x) =>
-        cleanUrl(
-          x.replace(
-            /^\s*sitemap\s*:/i,
-            ""
-          )
-        )
-      )
-      .filter(
-        (
-          x
-        ): x is string =>
-          !!x &&
-          sameHost(x, seed)
-      )
-      .slice(0, 10);
   } catch {
-    return [];
+    return false;
   }
 }
 
-async function savePdfLinks(
-  d: Db,
-  botId: string,
-  urls: string[]
-) {
-  if (!urls.length) {
-    return;
-  }
+/* =========================================================
+   HTML / TEXT
+========================================================= */
 
-  const unique = [
-    ...new Set(urls)
-  ].slice(0, MAX_PDFS);
-
-  if (!unique.length) {
-    return;
-  }
-
-  await d
-    .collection<PdfLink>(
-      "pdfLinks"
+function decode(s: string) {
+  return s
+    .replace(
+      /&nbsp;/gi,
+      " "
     )
-    .bulkWrite(
-      unique.map((url) => ({
-        updateOne: {
-          filter: {
-            botId,
-            url
-          },
-          update: {
-            $set: {
-              botId,
-              url,
-              title: pdfTitle(url),
-              updatedAt: now()
-            }
-          },
-          upsert: true
-        }
-      })),
-      {
-        ordered: false
-      }
+    .replace(
+      /&amp;/gi,
+      "&"
     )
-    .catch(() => {});
+    .replace(
+      /&quot;/gi,
+      '"'
+    )
+    .replace(
+      /&#39;/gi,
+      "'"
+    )
+    .replace(
+      /&lt;/gi,
+      "<"
+    )
+    .replace(
+      /&gt;/gi,
+      ">"
+    )
+    .replace(
+      /&#(\d+);/g,
+      (_, n) =>
+        String.fromCharCode(
+          Number(n)
+        )
+    )
+    .replace(
+      /&#x([0-9a-f]+);/gi,
+      (_, n) =>
+        String.fromCharCode(
+          parseInt(n, 16)
+        )
+    );
 }
 
-async function seedJob(
-  d: Db,
-  seed: string,
-  botId: string
-) {
-  const u = new URL(seed);
+function stripHtml(htmlText: string) {
+  const title = decode(
+    (
+      htmlText.match(
+        /<title[^>]*>([\s\S]*?)<\/title>/i
+      )?.[1] || ""
+    )
+      .replace(
+        /<[^>]+>/g,
+        " "
+      )
+  )
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim()
+    .slice(0, 300);
 
-  const bot: Bot = {
-    botId,
-    siteUrl: seed,
-    host: u.hostname,
-    title: "",
-    createdAt: now(),
-    updatedAt: now(),
-    status: "building",
-    pageCount: 0,
-    pdfCount: 0,
-    chunkCount: 0,
-    pdfLinks: 0
-  };
-
-  await d
-    .collection<Bot>("bots")
-    .updateOne(
-      {
-        botId
-      },
-      {
-        $set: bot
-      },
-      {
-        upsert: true
-      }
-    );
-
-  await d
-    .collection("chunks")
-    .deleteMany({
-      botId
-    });
-
-  await d
-    .collection("pdfLinks")
-    .deleteMany({
-      botId
-    });
-
-  const job: Job = {
-    jobId: id(),
-    botId,
-    seed,
-    queue: [seed],
-    visited: [],
-    pdfLinks: [],
-    pdfDone: [],
-    stage: "crawling",
-    pages: 0,
-    pdfs: 0,
-    chunks: 0,
-    errors: [],
-    createdAt: now(),
-    updatedAt: now(),
-    done: false,
-    sitemapLoaded: false
-  };
-
-  await d
-    .collection<Job>("jobs")
-    .insertOne(job);
-
-  return job;
-}
-
-async function crawlStep(
-  job: Job,
-  d: Db
-) {
-  /*
-    Process exactly one page per call.
-    This is intentional for Cloudflare Worker stability.
-  */
-
-  const urls =
-    job.queue.splice(
-      0,
-      PAGE_BATCH
-    );
-
-  if (!urls.length) {
-    job.stage = "done";
-    job.updatedAt = now();
-
-    await d
-      .collection("jobs")
-      .updateOne(
-        {
-          jobId: job.jobId
-        },
-        {
-          $set: job
-        }
+  const cleaned =
+    htmlText
+      .replace(
+        /<(script|style|noscript|template|svg|canvas|iframe)[^>]*>[\s\S]*?<\/\1>/gi,
+        " "
+      )
+      .replace(
+        /<!--[\s\S]*?-->/g,
+        " "
       );
 
-    return;
-  }
+  const withBreaks =
+    cleaned.replace(
+      /<(br|\/p|\/div|\/li|\/tr|\/h[1-6]|\/section|\/article|\/header|\/footer|\/nav|\/td|\/th)[^>]*>/gi,
+      "\n"
+    );
 
-  for (const url of urls) {
+  const text = decode(
+    withBreaks.replace(
+      /<[^>]+>/g,
+      " "
+    )
+  )
+    .replace(
+      /[\t ]+/g,
+      " "
+    )
+    .replace(
+      /\n\s+/g,
+      "\n"
+    )
+    .replace(
+      /\n{3,}/g,
+      "\n\n"
+    )
+    .trim();
+
+  return {
+    title,
+    text
+  };
+}
+
+/* =========================================================
+   LINK EXTRACTION
+========================================================= */
+
+function isPdfUrl(
+  url: string
+) {
+  return /\.pdf(?:$|[?#])/i.test(
+    url
+  );
+}
+
+function isBinary(
+  url: string
+) {
+  return /\.(?:jpg|jpeg|png|gif|webp|svg|ico|mp4|mp3|zip|rar|7z|doc|docx|xls|xlsx|ppt|pptx|css|js|woff2?|ttf)(?:$|[?#])/i.test(
+    url
+  );
+}
+
+function extractLinks(
+  htmlText: string,
+  base: string,
+  seed: string
+) {
+  const out =
+    new Set<string>();
+
+  const re =
+    /<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>/gi;
+
+  let match:
+    RegExpExecArray | null;
+
+  while (
+    (match = re.exec(htmlText))
+  ) {
+    const raw =
+      match[1].trim();
+
     if (
-      job.visited.includes(url)
+      /^(mailto:|tel:|javascript:|data:|#)/i.test(
+        raw
+      )
     ) {
       continue;
     }
 
-    job.visited.push(url);
+    const url =
+      cleanUrl(
+        raw,
+        base
+      );
 
-    try {
-      const r =
-        await fetchPage(
-          url,
-          job.seed
-        );
-
-      const finalUrl =
-        r.url || url;
-
-      const contentType =
-        (
-          r.headers.get(
-            "content-type"
-          ) || ""
-        ).toLowerCase();
-
-      /*
-        PDFs are NOT downloaded/read.
-        We only store their official URL.
-      */
-      if (
-        isPdfUrl(url) ||
-        contentType.includes(
-          "application/pdf"
-        )
-      ) {
-        if (
-          !job.pdfLinks.includes(
-            finalUrl
-          ) &&
-          job.pdfLinks.length <
-            MAX_PDFS
-        ) {
-          job.pdfLinks.push(
-            finalUrl
-          );
-
-          await savePdfLinks(
-            d,
-            job.botId,
-            [finalUrl]
-          );
-        }
-
-        continue;
-      }
-
-      const contentLength =
-        Number(
-          r.headers.get(
-            "content-length"
-          ) || 0
-        );
-
-      if (
-        contentLength >
-        MAX_HTML_BYTES
-      ) {
-        throw new Error(
-          "HTML page too large"
-        );
-      }
-
-      const raw =
-        await r.text();
-
-      if (
-        raw.length >
-        MAX_HTML_BYTES
-      ) {
-        throw new Error(
-          "HTML page too large"
-        );
-      }
-
-      const htmlish =
-        contentType.includes(
-          "html"
-        ) ||
-        contentType.includes(
-          "text/plain"
-        ) ||
-        /<(?:html|body|main|article|nav|header)\b/i.test(
-          raw.slice(
-            0,
-            50000
-          )
-        );
-
-      if (!htmlish) {
-        continue;
-      }
-
-      const {
-        title,
-        text
-      } = stripHtml(raw);
-
-      const parts =
-        chunkText(text);
-
-      if (parts.length) {
-        await d
-          .collection<Chunk>(
-            "chunks"
-          )
-          .insertMany(
-            parts.map(
-              (p) => ({
-                botId:
-                  job.botId,
-                url:
-                  finalUrl,
-                title,
-                text: p,
-                kind: "page" as const,
-                updatedAt: now()
-              })
-            )
-          );
-
-        job.chunks +=
-          parts.length;
-
-        job.pages++;
-
-        await d
-          .collection<Bot>(
-            "bots"
-          )
-          .updateOne(
-            {
-              botId:
-                job.botId
-            },
-            {
-              $set: {
-                title:
-                  title ||
-                  undefined,
-                updatedAt:
-                  now()
-              },
-              $inc: {
-                pageCount: 1,
-                chunkCount:
-                  parts.length
-              }
-            }
-          );
-      }
-
-      /*
-        Find PDF links in HTML.
-        We DO NOT fetch the PDFs.
-      */
-      const pagePdfs =
-        extractPdfLinks(
-          raw,
-          finalUrl,
-          job.seed
-        );
-
-      const newPdfs =
-        pagePdfs.filter(
-          (p) =>
-            !job.pdfLinks.includes(
-              p
-            )
-        );
-
-      for (const p of newPdfs) {
-        if (
-          job.pdfLinks.length >=
-          MAX_PDFS
-        ) {
-          break;
-        }
-
-        job.pdfLinks.push(p);
-      }
-
-      if (newPdfs.length) {
-        await savePdfLinks(
-          d,
-          job.botId,
-          job.pdfLinks
-        );
-      }
-
-      /*
-        Find normal internal links.
-      */
-      const found =
-        extractLinks(
-          raw,
-          finalUrl,
-          job.seed
-        );
-
-      const queued =
-        new Set([
-          ...job.queue,
-          ...job.visited
-        ]);
-
-      for (const u of found) {
-        if (
-          queued.has(u)
-        ) {
-          continue;
-        }
-
-        if (
-          job.queue.length >=
-          MAX_PAGES * 2
-        ) {
-          break;
-        }
-
-        job.queue.push(u);
-        queued.add(u);
-      }
-    } catch (e) {
-      if (
-        job.errors.length <
-        50
-      ) {
-        job.errors.push(
-          `${url}: ${String(e).slice(
-            0,
-            220
-          )}`
-        );
-      }
+    if (
+      url &&
+      allowed(
+        url,
+        seed
+      ) &&
+      !isBinary(url) &&
+      !isPdfUrl(url)
+    ) {
+      out.add(url);
     }
   }
 
-  /*
-    Load sitemap only once.
-    Bounded to keep Worker subrequests safe.
-  */
-  if (
-    !job.sitemapLoaded
+  return [
+    ...out
+  ];
+}
+
+function extractPdfLinks(
+  htmlText: string,
+  base: string,
+  seed: string
+) {
+  const out =
+    new Set<string>();
+
+  const re =
+    /(?:href|data-href|data-url)\s*=\s*["']([^"']+)["']/gi;
+
+  let match:
+    RegExpExecArray | null;
+
+  while (
+    (match = re.exec(htmlText))
   ) {
-    job.sitemapLoaded =
-      true;
+    const url =
+      cleanUrl(
+        match[1],
+        base
+      );
 
-    const robots =
-      await robotsSitemaps(
+    if (
+      url &&
+      allowed(
+        url,
+        seed
+      ) &&
+      isPdfUrl(url)
+    ) {
+      out.add(url);
+    }
+  }
+
+  return [
+    ...out
+  ];
+}
+
+function pdfTitle(
+  url: string
+) {
+  try {
+    const u =
+      new URL(url);
+
+    const file =
+      decodeURIComponent(
+        u.pathname
+          .split("/")
+          .pop() ||
+          "PDF Document"
+      );
+
+    return file
+      .replace(
+        /\.pdf$/i,
+        ""
+      )
+      .replace(
+        /[-_]+/g,
+        " "
+      )
+      .replace(
+        /\s+/g,
+        " "
+      )
+      .trim()
+      .slice(
+        0,
+        200
+      );
+  } catch {
+    return "PDF Document";
+  }
+}
+
+/* =========================================================
+   CHUNKING
+========================================================= */
+
+function chunkText(
+  text: string
+) {
+  const result: string[] =
+    [];
+
+  let start = 0;
+
+  while (
+    start < text.length
+  ) {
+    const end =
+      Math.min(
+        text.length,
+        start +
+          MAX_CHUNK
+      );
+
+    let cut = end;
+
+    if (
+      end <
+      text.length
+    ) {
+      const p =
+        Math.max(
+          text.lastIndexOf(
+            " ",
+            end
+          ),
+          text.lastIndexOf(
+            "\n",
+            end
+          )
+        );
+
+      if (
+        p >
+        start + 800
+      ) {
+        cut = p;
+      }
+    }
+
+    const value =
+      text
+        .slice(
+          start,
+          cut
+        )
+        .trim();
+
+    if (
+      value.length > 60
+    ) {
+      result.push(
+        value
+      );
+    }
+
+    if (
+      cut >=
+      text.length
+    ) {
+      break;
+    }
+
+    start =
+      Math.max(
+        cut -
+          OVERLAP,
+        start + 1
+      );
+  }
+
+  return result;
+}
+
+/* =========================================================
+   SEARCH
+========================================================= */
+
+function tokens(
+  text: string
+) {
+  return new Set(
+    (
+      text
+        .toLowerCase()
+        .match(
+          /[a-z0-9@._+-]+/g
+        ) || []
+    ).filter(
+      (x) =>
+        x.length > 1
+    )
+  );
+}
+
+function lexicalScore(
+  question: string,
+  text: string
+) {
+  const q =
+    tokens(question);
+
+  const t =
+    tokens(text);
+
+  if (
+    !q.size ||
+    !t.size
+  ) {
+    return 0;
+  }
+
+  let hit = 0;
+
+  for (
+    const word of q
+  ) {
+    if (
+      t.has(word)
+    ) {
+      hit++;
+    }
+  }
+
+  return (
+    hit / q.size
+  );
+}
+
+/* =========================================================
+   FETCH WEBSITE
+========================================================= */
+
+async function fetchPage(
+  url: string,
+  seed: string
+) {
+  if (
+    !allowed(
+      url,
+      seed
+    )
+  ) {
+    throw new Error(
+      "Blocked URL"
+    );
+  }
+
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () =>
+        controller.abort(),
+      15000
+    );
+
+  try {
+    const response =
+      await fetch(
+        url,
+        {
+          redirect:
+            "follow",
+          signal:
+            controller.signal,
+          headers: {
+            "user-agent":
+              UA,
+            accept:
+              "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+            "accept-language":
+              "en-US,en;q=0.8"
+          }
+        }
+      );
+
+    if (
+      !response.ok
+    ) {
+      throw new Error(
+        `HTTP ${response.status}`
+      );
+    }
+
+    if (
+      !allowed(
+        response.url ||
+          url,
+        seed
+      )
+    ) {
+      throw new Error(
+        "Redirected outside website"
+      );
+    }
+
+    const type =
+      (
+        response.headers.get(
+          "content-type"
+        ) || ""
+      ).toLowerCase();
+
+    if (
+      type &&
+      !type.includes(
+        "text/html"
+      ) &&
+      !type.includes(
+        "application/xhtml+xml"
+      ) &&
+      !type.includes(
+        "text/plain"
+      )
+    ) {
+      throw new Error(
+        "Not an HTML page"
+      );
+    }
+
+    const length =
+      Number(
+        response.headers.get(
+          "content-length"
+        ) || "0"
+      );
+
+    if (
+      length >
+      MAX_HTML_BYTES
+    ) {
+      throw new Error(
+        "HTML page too large"
+      );
+    }
+
+    const text =
+      await response.text();
+
+    if (
+      text.length >
+      MAX_HTML_BYTES
+    ) {
+      throw new Error(
+        "HTML page too large"
+      );
+    }
+
+    return {
+      url:
+        response.url ||
+        url,
+      html:
+        text
+    };
+  } finally {
+    clearTimeout(
+      timer
+    );
+  }
+}
+
+/* =========================================================
+   SMALL FETCH
+========================================================= */
+
+async function fetchSmall(
+  url: string
+) {
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () =>
+        controller.abort(),
+      8000
+    );
+
+  try {
+    return await fetch(
+      url,
+      {
+        redirect:
+          "follow",
+        signal:
+          controller.signal,
+        headers: {
+          "user-agent":
+            UA,
+          accept:
+            "application/xml,text/xml,text/plain,*/*;q=0.5"
+        }
+      }
+    );
+  } finally {
+    clearTimeout(
+      timer
+    );
+  }
+}
+
+/* =========================================================
+   SAVE PDF METADATA
+========================================================= */
+
+async function savePdfLinks(
+  d: Db,
+  job: Job,
+  urls: string[]
+) {
+  if (
+    !urls.length
+  ) {
+    return;
+  }
+
+  const collection =
+    d.collection<PdfLink>(
+      "pdfLinks"
+    );
+
+  const operations =
+    urls
+      .slice(
+        0,
+        MAX_PDFS
+      )
+      .map(
+        (url) => ({
+          updateOne: {
+            filter: {
+              botId:
+                job.botId,
+              url
+            },
+            update: {
+              $set: {
+                botId:
+                  job.botId,
+                url,
+                title:
+                  pdfTitle(
+                    url
+                  ),
+                updatedAt:
+                  now()
+              }
+            },
+            upsert: true
+          }
+        })
+      );
+
+  if (
+    operations.length
+  ) {
+    await collection.bulkWrite(
+      operations,
+      {
+        ordered:
+          false
+      }
+    );
+  }
+}
+
+/* =========================================================
+   SITEMAP PROCESSING
+========================================================= */
+
+function sitemapCandidates(
+  seed: string
+) {
+  const urls =
+    new Set<string>();
+
+  const paths = [
+    "/sitemap.xml",
+    "/wp-sitemap.xml",
+    "/sitemap_index.xml"
+  ];
+
+  for (
+    const path of paths
+  ) {
+    try {
+      urls.add(
+        new URL(
+          path,
+          seed
+        ).href
+      );
+    } catch {}
+  }
+
+  return [
+    ...urls
+  ];
+}
+
+function parseSitemap(
+  text: string,
+  seed: string
+) {
+  const pages =
+    new Set<string>();
+
+  const sitemaps =
+    new Set<string>();
+
+  for (
+    const match of text.matchAll(
+      /<loc>\s*([^<]+?)\s*<\/loc>/gi
+    )
+  ) {
+    const url =
+      cleanUrl(
+        match[1].trim()
+      );
+
+    if (
+      !url ||
+      !sameHost(
+        url,
+        seed
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      /\.xml(?:$|[?#])/i.test(
+        url
+      ) &&
+      /sitemap/i.test(
+        url
+      )
+    ) {
+      sitemaps.add(
+        url
+      );
+      continue;
+    }
+
+    if (
+      isPdfUrl(url)
+    ) {
+      continue;
+    }
+
+    if (
+      !isBinary(url)
+    ) {
+      pages.add(
+        url
+      );
+    }
+  }
+
+  return {
+    pages: [
+      ...pages
+    ],
+    sitemaps: [
+      ...sitemaps
+    ]
+  };
+}
+
+/*
+  ONE sitemap per step.
+  This is intentionally separate from
+  normal page crawling so one request
+  remains lightweight.
+*/
+
+async function processSitemapStep(
+  job: Job,
+  d: Db
+) {
+  const sitemap =
+    job.sitemapQueue.shift();
+
+  if (
+    !sitemap
+  ) {
+    return false;
+  }
+
+  if (
+    job.sitemapSeen.includes(
+      sitemap
+    )
+  ) {
+    return true;
+  }
+
+  job.sitemapSeen.push(
+    sitemap
+  );
+
+  try {
+    const response =
+      await fetchSmall(
+        sitemap
+      );
+
+    if (
+      !response.ok
+    ) {
+      return true;
+    }
+
+    const length =
+      Number(
+        response.headers.get(
+          "content-length"
+        ) || "0"
+      );
+
+    if (
+      length >
+      MAX_SITEMAP_BYTES
+    ) {
+      return true;
+    }
+
+    const text =
+      await response.text();
+
+    if (
+      text.length >
+      MAX_SITEMAP_BYTES
+    ) {
+      return true;
+    }
+
+    const parsed =
+      parseSitemap(
+        text,
         job.seed
       );
 
-    const sitemap =
-      await sitemapUrls(
-        job.seed
-      );
-
-    const allSitemapUrls = [
-      ...robots,
-      ...sitemap
-    ];
-
-    const seen =
-      new Set([
-        ...job.queue,
-        ...job.visited
-      ]);
+    /*
+      Add discovered pages.
+    */
 
     for (
-      const u of allSitemapUrls
+      const url of
+      parsed.pages
     ) {
       if (
-        seen.has(u)
+        job.queue.length >=
+        MAX_PAGES * 2
+      ) {
+        break;
+      }
+
+      if (
+        job.visited.includes(
+          url
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        !job.queue.includes(
+          url
+        )
+      ) {
+        job.queue.push(
+          url
+        );
+      }
+    }
+
+    /*
+      Add nested sitemaps.
+    */
+
+    for (
+      const url of
+      parsed.sitemaps
+    ) {
+      if (
+        job.sitemapSeen.includes(
+          url
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        !job.sitemapQueue.includes(
+          url
+        ) &&
+        job.sitemapQueue.length <
+          20
+      ) {
+        job.sitemapQueue.push(
+          url
+        );
+      }
+    }
+
+    return true;
+  } catch (err) {
+    job.errors.push(
+      `Sitemap ${sitemap}: ${
+        err instanceof Error
+          ? err.message
+          : String(err)
+      }`
+    );
+
+    return true;
+  }
+}
+
+/* =========================================================
+   CRAWL ONE PAGE
+========================================================= */
+
+async function crawlOnePage(
+  job: Job,
+  d: Db
+) {
+  let url =
+    job.queue.shift();
+
+  /*
+    Find next usable URL.
+  */
+
+  while (
+    url &&
+    (
+      job.visited.includes(
+        url
+      ) ||
+      !allowed(
+        url,
+        job.seed
+      )
+    )
+  ) {
+    url =
+      job.queue.shift();
+  }
+
+  if (
+    !url
+  ) {
+    return false;
+  }
+
+  try {
+    const result =
+      await fetchPage(
+        url,
+        job.seed
+      );
+
+    const finalUrl =
+      result.url;
+
+    const parsed =
+      stripHtml(
+        result.html
+      );
+
+    /*
+      Mark visited only after
+      successful fetch.
+    */
+
+    if (
+      !job.visited.includes(
+        finalUrl
+      )
+    ) {
+      job.visited.push(
+        finalUrl
+      );
+    }
+
+    /*
+      Discover normal internal pages.
+    */
+
+    const links =
+      extractLinks(
+        result.html,
+        finalUrl,
+        job.seed
+      );
+
+    for (
+      const link of
+      links
+    ) {
+      if (
+        job.visited.includes(
+          link
+        )
       ) {
         continue;
       }
@@ -1146,111 +1282,146 @@ async function crawlStep(
         break;
       }
 
-      job.queue.push(u);
-      seen.add(u);
+      if (
+        !job.queue.includes(
+          link
+        )
+      ) {
+        job.queue.push(
+          link
+        );
+      }
     }
-  }
 
-  job.pdfLinks = [
-    ...new Set(
-      job.pdfLinks
-    )
-  ].slice(
-    0,
-    MAX_PDFS
-  );
+    /*
+      Discover PDFs.
+      We DO NOT download them.
+    */
 
-  await savePdfLinks(
-    d,
-    job.botId,
-    job.pdfLinks
-  );
+    const pdfs =
+      extractPdfLinks(
+        result.html,
+        finalUrl,
+        job.seed
+      );
 
-  if (
-    job.queue.length === 0
-  ) {
-    job.stage = "done";
-  }
-
-  job.updatedAt = now();
-
-  await d
-    .collection<Job>("jobs")
-    .updateOne(
-      {
-        jobId: job.jobId
-      },
-      {
-        $set: job
+    for (
+      const pdf of
+      pdfs
+    ) {
+      if (
+        job.pdfLinks.length >=
+        MAX_PDFS
+      ) {
+        break;
       }
+
+      if (
+        !job.pdfLinks.includes(
+          pdf
+        )
+      ) {
+        job.pdfLinks.push(
+          pdf
+        );
+      }
+    }
+
+    await savePdfLinks(
+      d,
+      job,
+      pdfs
     );
 
-  await d
-    .collection<Bot>("bots")
-    .updateOne(
-      {
-        botId: job.botId
-      },
-      {
-        $set: {
-          pdfLinks:
-            job.pdfLinks.length,
-          updatedAt: now()
-        }
-      }
+    /*
+      Create text chunks.
+    */
+
+    const chunks =
+      chunkText(
+        parsed.text
+      );
+
+    const collection =
+      d.collection<Chunk>(
+        "chunks"
+      );
+
+    /*
+      Avoid duplicates if a page
+      is ever retried.
+    */
+
+    await collection.deleteMany({
+      botId:
+        job.botId,
+      url:
+        finalUrl
+    });
+
+    if (
+      chunks.length
+    ) {
+      const documents =
+        chunks.map(
+          (text) => ({
+            botId:
+              job.botId,
+            url:
+              finalUrl,
+            title:
+              parsed.title ||
+              finalUrl,
+            text,
+            kind:
+              "page" as const,
+            updatedAt:
+              now()
+          })
+        );
+
+      await collection.insertMany(
+        documents
+      );
+
+      job.chunks +=
+        documents.length;
+    }
+
+    job.pages += 1;
+
+    return true;
+  } catch (err) {
+    job.errors.push(
+      `${url}: ${
+        err instanceof Error
+          ? err.message
+          : String(err)
+      }`
     );
+
+    /*
+      Mark failed page visited so
+      one broken page doesn't loop forever.
+    */
+
+    if (
+      !job.visited.includes(
+        url
+      )
+    ) {
+      job.visited.push(
+        url
+      );
+    }
+
+    return true;
+  }
 }
 
-async function finalize(
-  job: Job,
-  d: Db
-) {
-  job.done = true;
-  job.stage = "done";
-  job.updatedAt = now();
-
-  await savePdfLinks(
-    d,
-    job.botId,
-    job.pdfLinks
-  );
-
-  await d
-    .collection<Job>("jobs")
-    .updateOne(
-      {
-        jobId: job.jobId
-      },
-      {
-        $set: job
-      }
-    );
-
-  await d
-    .collection<Bot>("bots")
-    .updateOne(
-      {
-        botId: job.botId
-      },
-      {
-        $set: {
-          status:
-            job.pages ||
-            job.chunks
-              ? "ready"
-              : "failed",
-          updatedAt: now(),
-          pageCount:
-            job.pages,
-          pdfCount: 0,
-          chunkCount:
-            job.chunks,
-          pdfLinks:
-            job.pdfLinks.length
-        }
-      }
-    );
-}
+/* =========================================================
+   ONE BUILD STEP
+========================================================= */
 
 async function buildStep(
   env: Env,
@@ -1261,74 +1432,328 @@ async function buildStep(
       env.MONGODB_URI
     );
 
-  await ensureIndexes(d);
+  const jobs =
+    d.collection<Job>(
+      "jobs"
+    );
 
   const job =
-    await d
-      .collection<Job>("jobs")
-      .findOne({
-        jobId
-      });
-
-  if (!job || job.done) {
-    return job;
-  }
+    await jobs.findOne({
+      jobId
+    });
 
   if (
-    job.stage ===
-    "crawling"
+    !job
   ) {
-    await crawlStep(
-      job,
-      d
+    throw new Error(
+      "Job not found"
     );
   }
 
   if (
-    job.stage === "done" &&
-    !job.done
+    job.done ||
+    job.stage === "done" ||
+    job.stage === "error"
+  ) {
+    return job;
+  }
+
+  /*
+    If page limit reached,
+    finish.
+  */
+
+  if (
+    job.pages >=
+    MAX_PAGES
+  ) {
+    job.done = true;
+    job.stage = "done";
+  } else {
+    /*
+      Process sitemap first.
+      Exactly ONE sitemap request.
+    */
+
+    let worked =
+      false;
+
+    if (
+      job.sitemapQueue.length
+    ) {
+      worked =
+        await processSitemapStep(
+          job,
+          d
+        );
+    }
+
+    /*
+      Then crawl exactly ONE page.
+    */
+
+    if (
+      !worked &&
+      job.queue.length
+    ) {
+      worked =
+        await crawlOnePage(
+          job,
+          d
+        );
+    }
+
+    /*
+      Nothing left.
+    */
+
+    if (
+      !worked &&
+      !job.queue.length &&
+      !job.sitemapQueue.length
+    ) {
+      job.done = true;
+      job.stage = "done";
+    }
+  }
+
+  job.pdfs =
+    job.pdfLinks.length;
+
+  job.updatedAt =
+    now();
+
+  await jobs.updateOne(
+    {
+      jobId
+    },
+    {
+      $set: job
+    }
+  );
+
+  if (
+    job.done
   ) {
     await finalize(
-      job,
-      d
+      env,
+      job
     );
   }
 
   return job;
 }
 
-function pdfMatches(
-  question: string,
-  pdf: PdfLink
-) {
-  const title =
-    `${pdf.title} ${pdf.url}`;
+/* =========================================================
+   FINALIZE
+========================================================= */
 
-  return lexicalScore(
-    question,
-    title
-  );
-}
-
-async function answer(
+async function finalize(
   env: Env,
-  botId: string,
-  q: string
+  job: Job
 ) {
   const d =
     await mongo(
       env.MONGODB_URI
     );
 
-  await ensureIndexes(d);
+  const chunks =
+    await d
+      .collection("chunks")
+      .countDocuments({
+        botId:
+          job.botId
+      });
+
+  const pdfs =
+    await d
+      .collection("pdfLinks")
+      .countDocuments({
+        botId:
+          job.botId
+      });
+
+  await d
+    .collection("bots")
+    .updateOne(
+      {
+        botId:
+          job.botId
+      },
+      {
+        $set: {
+          status:
+            "ready",
+          pageCount:
+            job.pages,
+          pdfCount:
+            pdfs,
+          chunkCount:
+            chunks,
+          updatedAt:
+            now()
+        }
+      }
+    );
+}
+
+/* =========================================================
+   CREATE JOB
+========================================================= */
+
+async function seedJob(
+  env: Env,
+  siteUrl: string
+) {
+  const d =
+    await mongo(
+      env.MONGODB_URI
+    );
+
+  await ensureIndexes(
+    d
+  );
+
+  const botId =
+    makeId();
+
+  const jobId =
+    makeId();
+
+  const created =
+    now();
+
+  const hostName =
+    host(siteUrl);
+
+  const bot: Bot = {
+    botId,
+    siteUrl,
+    host:
+      hostName,
+    createdAt:
+      created,
+    updatedAt:
+      created,
+    status:
+      "building",
+    pageCount:
+      0,
+    pdfCount:
+      0,
+    chunkCount:
+      0
+  };
+
+  /*
+    Only official website sitemap
+    locations are considered.
+  */
+
+  const sitemaps =
+    sitemapCandidates(
+      siteUrl
+    );
+
+  const job: Job = {
+    jobId,
+    botId,
+    seed:
+      siteUrl,
+
+    queue: [
+      siteUrl
+    ],
+
+    visited: [],
+
+    pdfLinks: [],
+
+    sitemapQueue:
+      sitemaps,
+
+    sitemapSeen: [],
+
+    stage:
+      "crawl",
+
+    pages:
+      0,
+
+    pdfs:
+      0,
+
+    chunks:
+      0,
+
+    errors: [],
+
+    createdAt:
+      created,
+
+    updatedAt:
+      created,
+
+    done:
+      false
+  };
+
+  await d
+    .collection<Bot>(
+      "bots"
+    )
+    .insertOne(
+      bot
+    );
+
+  await d
+    .collection<Job>(
+      "jobs"
+    )
+    .insertOne(
+      job
+    );
+
+  return {
+    bot,
+    job
+  };
+}
+
+/* =========================================================
+   CHAT ANSWER
+========================================================= */
+
+async function answer(
+  env: Env,
+  botId: string,
+  question: string
+) {
+  const d =
+    await mongo(
+      env.MONGODB_URI
+    );
+
+  await ensureIndexes(
+    d
+  );
 
   const chunks =
     d.collection<Chunk>(
       "chunks"
     );
 
-  let candidates: any[] =
-    [];
+  const pdfCollection =
+    d.collection<PdfLink>(
+      "pdfLinks"
+    );
+
+  /*
+    Mongo text search first.
+  */
+
+  let candidates:
+    Chunk[] = [];
 
   try {
     candidates =
@@ -1337,109 +1762,116 @@ async function answer(
           {
             botId,
             $text: {
-              $search: q
+              $search:
+                question
             }
           },
           {
             projection: {
-              _id: 0
+              botId: 1,
+              url: 1,
+              title: 1,
+              text: 1,
+              kind: 1,
+              updatedAt: 1
             }
           }
         )
-        .sort({
-          score: {
-            $meta:
-              "textScore"
-          }
-        })
-        .limit(40)
+        .limit(20)
         .toArray();
   } catch {
     candidates =
       await chunks
-        .find(
-          {
-            botId
-          },
-          {
-            projection: {
-              _id: 0
-            }
-          }
-        )
-        .limit(200)
+        .find({
+          botId
+        })
+        .limit(100)
         .toArray();
   }
 
+  /*
+    Lexical reranking.
+  */
+
   candidates =
     candidates
-      .map((x) => ({
-        ...x,
-        _score:
-          lexicalScore(
-            q,
-            x.text
-          )
-      }))
-      .sort(
-        (a, b) =>
-          b._score -
-          a._score
-      )
-      .slice(0, 8);
-
-  /*
-    Also search PDF metadata.
-    PDF contents are never extracted.
-  */
-  const pdfs =
-    await d
-      .collection<PdfLink>(
-        "pdfLinks"
-      )
-      .find({
-        botId
-      })
-      .limit(MAX_PDFS)
-      .toArray()
-      .catch(
-        () => []
-      );
-
-  const relevantPdfs =
-    pdfs
-      .map((pdf) => ({
-        pdf,
-        score:
-          pdfMatches(
-            q,
-            pdf
-          )
-      }))
-      .filter(
-        (x) =>
-          x.score >= 0.25
+      .map(
+        (item) => ({
+          item,
+          score:
+            lexicalScore(
+              question,
+              item.text
+            )
+        })
       )
       .sort(
         (a, b) =>
           b.score -
           a.score
       )
-      .slice(0, 5);
-
-  const bestChunkScore =
-    candidates.length
-      ? candidates[0]._score
-      : 0;
+      .slice(
+        0,
+        8
+      )
+      .map(
+        (x) =>
+          x.item
+      );
 
   /*
-    If neither website content nor PDF metadata
-    matches the question, refuse to guess.
+    PDF metadata search.
+    PDFs themselves are NOT read.
   */
+
+  const pdfs =
+    await pdfCollection
+      .find({
+        botId
+      })
+      .limit(
+        MAX_PDFS
+      )
+      .toArray();
+
+  const pdfMatches =
+    pdfs
+      .map(
+        (pdf) => ({
+          pdf,
+          score:
+            lexicalScore(
+              question,
+              `${pdf.title} ${pdf.url}`
+            )
+        })
+      )
+      .filter(
+        (x) =>
+          x.score > 0
+      )
+      .sort(
+        (a, b) =>
+          b.score -
+          a.score
+      )
+      .slice(
+        0,
+        5
+      )
+      .map(
+        (x) =>
+          x.pdf
+      );
+
+  /*
+    If absolutely nothing matches,
+    don't hallucinate.
+  */
+
   if (
-    bestChunkScore <
-      0.08 &&
-    relevantPdfs.length === 0
+    !candidates.length &&
+    !pdfMatches.length
   ) {
     return {
       answer:
@@ -1448,150 +1880,170 @@ async function answer(
     };
   }
 
-  const contextParts =
-    candidates.map(
-      (x, i) =>
-        `SOURCE ${i + 1}
-URL: ${x.url}
-CONTENT:
-${x.text}`
-    );
-
-  if (
-    relevantPdfs.length
-  ) {
-    for (
-      const item of relevantPdfs
-    ) {
-      contextParts.push(
-        `OFFICIAL PDF LINK
-TITLE: ${item.pdf.title}
-URL: ${item.pdf.url}
-NOTE: Only the PDF title and official URL are available. The PDF contents were not extracted.`
-      );
-    }
-  }
-
   const context =
-    contextParts.join(
-      "\n\n"
-    );
+    candidates
+      .map(
+        (c, index) =>
+          `[SOURCE ${index + 1}]
+Title: ${c.title}
+URL: ${c.url}
+Content:
+${c.text}`
+      )
+      .join(
+        "\n\n"
+      );
 
-  const system = `
-You are the AI receptionist for the website represented by the supplied sources.
+  const pdfContext =
+    pdfMatches.length
+      ? pdfMatches
+          .map(
+            (p, index) =>
+              `[PDF ${index + 1}]
+Title: ${p.title}
+URL: ${p.url}`
+          )
+          .join(
+            "\n\n"
+          )
+      : "No matching PDF.";
 
-Answer ONLY from the supplied website sources.
+  const prompt = `
+You are the official website assistant.
 
-Never use outside knowledge.
+Answer ONLY using the website information supplied below.
 
-Never invent:
-- facts
-- dates
-- fees
-- eligibility
-- names
-- phone numbers
-- emails
-- policies
-- timings
-- availability
-- course information
-- admission information
+Rules:
+1. Never invent facts.
+2. Never use outside knowledge.
+3. If the answer is not present, say:
+   "I couldn't find that information on the website."
+4. If the user asks about a PDF, you may mention its title and provide its official URL.
+5. Do NOT pretend that you read the PDF content.
+6. If the user asks for contact information, preserve exact phone numbers and email addresses.
+7. If the user asks in English, answer in English.
+8. If the user asks naturally in Roman Hindi/Hinglish, answer in Roman Hindi/Hinglish.
+9. Keep answers clear and reasonably concise.
+10. Include useful source URLs when appropriate.
 
-If the answer is not supported by the supplied website sources, say exactly:
+WEBSITE CONTENT:
 
-"I couldn't find that information on the website."
+${context}
 
-If the user writes natural Roman Hinglish, reply in natural Roman Hinglish.
+PDF LINKS:
 
-Otherwise reply in English.
+${pdfContext}
 
-Be concise and helpful.
+USER QUESTION:
 
-If a relevant official PDF/document link is supplied but its contents were not extracted, clearly tell the user that the official document can be opened/downloaded using the provided source link. Do not claim anything about the document's contents.
-
-Never pretend that you read a PDF when only its title and URL are available.
+${question}
 `;
 
-  const res =
+  const aiResult =
     await env.AI.run(
       MODEL,
       {
         messages: [
           {
-            role: "system",
+            role:
+              "system",
             content:
-              system
+              "You are a strict website-grounded assistant."
           },
           {
-            role: "user",
+            role:
+              "user",
             content:
-              `WEBSITE SOURCES:
-
-${context}
-
-USER QUESTION:
-${q}`
+              prompt
           }
         ],
-        max_tokens: 500,
-        temperature: 0.1
+        temperature:
+          0.1,
+        max_tokens:
+          700
       }
     );
 
-  const text =
-    typeof res === "string"
-      ? res
-      : res?.response ||
-        res?.result
-          ?.response ||
-        "";
+  let text =
+    "";
 
-  const sourcesMap =
+  if (
+    typeof aiResult ===
+    "string"
+  ) {
+    text =
+      aiResult;
+  } else if (
+    aiResult?.response
+  ) {
+    text =
+      aiResult.response;
+  } else if (
+    aiResult?.result
+  ) {
+    text =
+      aiResult.result;
+  } else {
+    text =
+      "I couldn't find that information on the website.";
+  }
+
+  /*
+    Sources shown separately in UI.
+  */
+
+  const sourceMap =
     new Map<
       string,
       {
-        url: string;
         title: string;
+        url: string;
+        type: "page" | "pdf";
       }
     >();
 
   for (
-    const x of candidates
+    const item of
+    candidates
   ) {
     if (
-      !sourcesMap.has(
-        x.url
+      !sourceMap.has(
+        item.url
       )
     ) {
-      sourcesMap.set(
-        x.url,
+      sourceMap.set(
+        item.url,
         {
-          url: x.url,
           title:
-            x.title ||
-            "Source"
+            item.title ||
+            item.url,
+          url:
+            item.url,
+          type:
+            "page"
         }
       );
     }
   }
 
   for (
-    const item of relevantPdfs
+    const item of
+    pdfMatches
   ) {
     if (
-      !sourcesMap.has(
-        item.pdf.url
+      !sourceMap.has(
+        item.url
       )
     ) {
-      sourcesMap.set(
-        item.pdf.url,
+      sourceMap.set(
+        item.url,
         {
-          url:
-            item.pdf.url,
           title:
-            item.pdf.title ||
-            "PDF Document"
+            item.title,
+          url:
+            item.url,
+          type:
+            "pdf"
         }
       );
     }
@@ -1599,72 +2051,130 @@ ${q}`
 
   return {
     answer:
-      text ||
-      "I couldn't find that information on the website.",
-    sources: [
-      ...sourcesMap.values()
-    ].slice(0, 5)
+      text.trim(),
+    sources:
+      [...sourceMap.values()]
+        .slice(
+          0,
+          8
+        )
   };
 }
+
+/* =========================================================
+   ADMIN HTML
+========================================================= */
 
 function adminHtml() {
   return `<!doctype html>
 <html>
 <head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Gen Solution</title>
+<title>Gen-Solution Admin</title>
 
 <style>
+*{
+  box-sizing:border-box;
+}
+
 body{
-  font-family:Inter,Arial,sans-serif;
-  background:#f5f7fb;
   margin:0;
-  color:#111827
+  background:#f5f7fb;
+  color:#111827;
+  font-family:Inter,Arial,sans-serif;
 }
 
 .wrap{
   max-width:900px;
-  margin:50px auto;
-  padding:24px
+  margin:40px auto;
+  padding:20px;
 }
 
 .card{
-  background:#fff;
+  background:white;
+  border:1px solid #e5e7eb;
   border-radius:18px;
-  padding:28px;
-  box-shadow:0 8px 35px #0001
+  padding:24px;
+  box-shadow:0 10px 35px rgba(0,0,0,.06);
 }
 
-input,button{
+h1{
+  margin:0 0 8px;
+  font-size:28px;
+}
+
+.muted{
+  color:#6b7280;
+  margin-bottom:24px;
+}
+
+label{
+  display:block;
+  font-size:14px;
+  font-weight:700;
+  margin:16px 0 7px;
+}
+
+input{
   width:100%;
-  box-sizing:border-box;
-  padding:13px;
-  border-radius:10px;
+  padding:13px 14px;
   border:1px solid #d1d5db;
-  font-size:15px
+  border-radius:10px;
+  font-size:15px;
+  outline:none;
+}
+
+input:focus{
+  border-color:#111827;
 }
 
 button{
-  margin-top:12px;
-  background:#111827;
-  color:#fff;
   border:0;
-  cursor:pointer
+  border-radius:10px;
+  padding:13px 18px;
+  background:#111827;
+  color:white;
+  font-size:15px;
+  font-weight:700;
+  cursor:pointer;
+  margin-top:18px;
 }
 
 button:disabled{
-  opacity:.6;
-  cursor:not-allowed
+  opacity:.55;
+  cursor:not-allowed;
 }
 
 .status{
-  margin-top:18px;
-  padding:15px;
-  background:#f3f4f6;
+  margin-top:20px;
+  padding:14px;
   border-radius:10px;
+  background:#f3f4f6;
   white-space:pre-wrap;
-  overflow:auto;
-  min-height:40px
+  word-break:break-word;
+}
+
+.embed{
+  margin-top:24px;
+  display:none;
+}
+
+textarea{
+  width:100%;
+  min-height:130px;
+  margin-top:8px;
+  border:1px solid #d1d5db;
+  border-radius:10px;
+  padding:12px;
+  font-family:monospace;
+  font-size:13px;
+}
+
+.small{
+  font-size:13px;
+  color:#6b7280;
+  margin-top:8px;
 }
 </style>
 </head>
@@ -1672,549 +2182,718 @@ button:disabled{
 <body>
 
 <div class="wrap">
+
 <div class="card">
 
-<h1>Gen Solution</h1>
+<h1>Gen-Solution AI Website Chatbot</h1>
 
-<p>
-Build a website-only AI receptionist.
-</p>
+<div class="muted">
+Enter a public website URL. The crawler will index its
+HTML content and PDF links.
+</div>
 
+<label>Website URL</label>
 <input
-  id="url"
-  placeholder="https://example.com"
-  autocomplete="url"
->
+  id="siteUrl"
+  placeholder="https://example.com/"
+/>
 
+<label>Admin Key</label>
 <input
-  id="key"
-  placeholder="Admin key"
+  id="adminKey"
   type="password"
-  style="margin-top:10px"
-  autocomplete="off"
->
+  placeholder="Your ADMIN_KEY"
+/>
 
-<button
-  id="buildBtn"
-  type="button"
->
+<button id="buildBtn">
 Crawl & Build
 </button>
 
 <div
-  id="s"
+  id="status"
   class="status"
 >
 Ready.
 </div>
 
+<div
+  id="embedBox"
+  class="embed"
+>
+<label>Embed code</label>
+
+<textarea
+  id="embedCode"
+  readonly
+></textarea>
+
+<button id="copyBtn">
+Copy Embed Code
+</button>
+
+<div class="small">
+Paste this single script tag into the client's website.
+No source-code sharing is required.
 </div>
+</div>
+
+</div>
+
 </div>
 
 <script>
-(function(){
-
-const urlInput =
-  document.getElementById("url");
-
-const keyInput =
-  document.getElementById("key");
-
-const button =
+const buildBtn =
   document.getElementById("buildBtn");
 
-const status =
-  document.getElementById("s");
+const statusEl =
+  document.getElementById("status");
 
-let timer = null;
+const embedBox =
+  document.getElementById("embedBox");
 
-function show(text){
-  status.textContent = text;
+const embedCode =
+  document.getElementById("embedCode");
+
+const copyBtn =
+  document.getElementById("copyBtn");
+
+let currentKey = "";
+
+function setStatus(text){
+  statusEl.textContent = text;
 }
 
-async function startBuild(){
+async function readJson(response, label){
+  const text =
+    await response.text();
 
-  const website =
-    urlInput.value.trim();
-
-  const key =
-    keyInput.value;
-
-  if(!website){
-    show(
-      "Please enter a website URL."
+  if(!response.ok){
+    throw new Error(
+      label +
+      " HTTP " +
+      response.status +
+      ": " +
+      text.slice(0,500)
     );
-
-    urlInput.focus();
-
-    return;
   }
-
-  if(!key){
-    show(
-      "Please enter the Admin Key."
-    );
-
-    keyInput.focus();
-
-    return;
-  }
-
-  if(timer){
-    clearInterval(timer);
-    timer = null;
-  }
-
-  button.disabled = true;
-  button.textContent =
-    "Starting...";
-
-  show(
-    "Starting build..."
-  );
 
   try{
-
-    const response =
-      await fetch(
-        "/api/admin/build",
-        {
-          method:"POST",
-
-          headers:{
-            "content-type":
-              "application/json",
-
-            "x-admin-key":
-              key
-          },
-
-          body:JSON.stringify({
-            url:website
-          })
-        }
-      );
-
-    const text =
-      await response.text();
-
-    let data;
-
-    try{
-      data =
-        JSON.parse(text);
-    }catch{
-      throw new Error(
-        "Server returned an invalid response: " +
-        text.slice(0,300)
-      );
-    }
-
-    if(!response.ok){
-      throw new Error(
-        data.error ||
-        "Build request failed. HTTP " +
-        response.status
-      );
-    }
-
-    if(!data.jobId){
-      throw new Error(
-        "Server did not return a jobId."
-      );
-    }
-
-    show(
-      "Build started.\\n\\n" +
-      "Job ID: " +
-      data.jobId +
-      "\\n\\n" +
-      "Crawling website..."
+    return JSON.parse(text);
+  }catch{
+    throw new Error(
+      "Invalid " +
+      label +
+      " response: " +
+      text.slice(0,500)
     );
-
-    button.textContent =
-      "Crawling...";
-
-    await checkJob(
-      data.jobId,
-      key
-    );
-
-    timer =
-      setInterval(
-        async function(){
-
-          try{
-
-            const finished =
-              await checkJob(
-                data.jobId,
-                key
-              );
-
-            if(finished){
-
-              clearInterval(
-                timer
-              );
-
-              timer = null;
-
-              button.disabled =
-                false;
-
-              button.textContent =
-                "Crawl & Build";
-            }
-
-          }catch(error){
-
-            clearInterval(
-              timer
-            );
-
-            timer = null;
-
-            show(
-              "Error while checking build:\\n\\n" +
-              (
-                error.message ||
-                String(error)
-              )
-            );
-
-            button.disabled =
-              false;
-
-            button.textContent =
-              "Crawl & Build";
-          }
-
-        },
-        1500
-      );
-
-  }catch(error){
-
-    show(
-      "Build Error:\\n\\n" +
-      (
-        error.message ||
-        String(error)
-      )
-    );
-
-    button.disabled =
-      false;
-
-    button.textContent =
-      "Crawl & Build";
   }
 }
 
-async function checkJob(
-  jobId,
-  key
-){
-
+async function getStatus(jobId){
   const response =
     await fetch(
       "/api/admin/job/" +
-      encodeURIComponent(
-        jobId
-      ),
+      encodeURIComponent(jobId),
       {
-        method:"GET",
-
         headers:{
           "x-admin-key":
-            key
+            currentKey
         },
-
         cache:"no-store"
       }
     );
 
-  const text =
-    await response.text();
-
-  let data;
-
-  try{
-    data =
-      JSON.parse(text);
-  }catch{
-    throw new Error(
-      "Invalid job response: " +
-      text.slice(0,300)
-    );
-  }
-
-  if(!response.ok){
-    throw new Error(
-      data.error ||
-      "Job request failed. HTTP " +
-      response.status
-    );
-  }
-
-  show(
-    JSON.stringify(
-      data,
-      null,
-      2
-    )
+  return readJson(
+    response,
+    "status"
   );
+}
 
-  if(data.done){
+async function doStep(jobId){
+  const response =
+    await fetch(
+      "/api/admin/step/" +
+      encodeURIComponent(jobId),
+      {
+        method:"POST",
+        headers:{
+          "x-admin-key":
+            currentKey
+        },
+        cache:"no-store"
+      }
+    );
 
-    if(data.embedScript){
+  return readJson(
+    response,
+    "step"
+  );
+}
 
-      show(
-        "BUILD COMPLETE ✅\\n\\n" +
-        JSON.stringify(
-          data,
-          null,
-          2
-        ) +
-        "\\n\\n" +
-        "EMBED SCRIPT:\\n\\n" +
-        data.embedScript
+async function pollJob(jobId,botId){
+
+  while(true){
+
+    const statusData =
+      await getStatus(
+        jobId
       );
 
-    }else{
+    const job =
+      statusData.job;
 
-      show(
-        "BUILD FINISHED\\n\\n" +
-        JSON.stringify(
-          data,
-          null,
-          2
-        )
+    if(!job){
+      throw new Error(
+        "Job data missing."
       );
     }
 
-    return true;
-  }
+    if(
+      job.done ||
+      job.stage === "done"
+    ){
 
-  return false;
+      setStatus(
+        "Build completed.\\n" +
+        "Pages: " +
+        job.pages +
+        "\\n" +
+        "PDF links: " +
+        job.pdfs +
+        "\\n" +
+        "Chunks: " +
+        job.chunks
+      );
+
+      const base =
+        window.location.origin;
+
+      const code =
+        '<script src="' +
+        base +
+        '/widget.js?bot=' +
+        encodeURIComponent(botId) +
+        '" defer><\\/script>';
+
+      embedCode.value =
+        code;
+
+      embedBox.style.display =
+        "block";
+
+      return;
+    }
+
+    if(
+      job.stage === "error"
+    ){
+      throw new Error(
+        job.errors &&
+        job.errors.length
+          ? job.errors.join("\\n")
+          : "Build failed."
+      );
+    }
+
+    setStatus(
+      "Building...\\n" +
+      "Pages crawled: " +
+      job.pages +
+      " / 400\\n" +
+      "PDF links: " +
+      job.pdfs +
+      "\\n" +
+      "Chunks: " +
+      job.chunks +
+      "\\n" +
+      "Queue: " +
+      job.queue.length +
+      "\\n" +
+      "Sitemaps left: " +
+      job.sitemapQueue.length
+    );
+
+    /*
+      One lightweight step.
+    */
+
+    await doStep(
+      jobId
+    );
+
+    /*
+      Small delay avoids hammering
+      Cloudflare/MongoDB.
+    */
+
+    await new Promise(
+      resolve =>
+        setTimeout(
+          resolve,
+          700
+        )
+    );
+  }
 }
 
-button.addEventListener(
+buildBtn.addEventListener(
   "click",
-  startBuild
+  async () => {
+
+    try{
+
+      buildBtn.disabled =
+        true;
+
+      embedBox.style.display =
+        "none";
+
+      const siteUrl =
+        document
+          .getElementById(
+            "siteUrl"
+          )
+          .value
+          .trim();
+
+      currentKey =
+        document
+          .getElementById(
+            "adminKey"
+          )
+          .value
+          .trim();
+
+      if(!siteUrl){
+        throw new Error(
+          "Website URL is required."
+        );
+      }
+
+      if(!currentKey){
+        throw new Error(
+          "Admin Key is required."
+        );
+      }
+
+      setStatus(
+        "Creating build job..."
+      );
+
+      const response =
+        await fetch(
+          "/api/admin/build",
+          {
+            method:"POST",
+            headers:{
+              "content-type":
+                "application/json",
+              "x-admin-key":
+                currentKey
+            },
+            body:
+              JSON.stringify({
+                url:
+                  siteUrl
+              })
+          }
+        );
+
+      const data =
+        await readJson(
+          response,
+          "build"
+        );
+
+      if(
+        !data.ok ||
+        !data.jobId
+      ){
+        throw new Error(
+          data.error ||
+          "Build job was not created."
+        );
+      }
+
+      setStatus(
+        "Job created. Starting crawler..."
+      );
+
+      await pollJob(
+        data.jobId,
+        data.botId
+      );
+
+    }catch(error){
+
+      setStatus(
+        "Build Error:\\n\\n" +
+        (
+          error instanceof Error
+            ? error.message
+            : String(error)
+        )
+      );
+
+    }finally{
+
+      buildBtn.disabled =
+        false;
+    }
+  }
 );
 
-})();
+copyBtn.addEventListener(
+  "click",
+  async () => {
+
+    try{
+
+      await navigator.clipboard.writeText(
+        embedCode.value
+      );
+
+      copyBtn.textContent =
+        "Copied!";
+
+      setTimeout(
+        () => {
+          copyBtn.textContent =
+            "Copy Embed Code";
+        },
+        1500
+      );
+
+    }catch{
+
+      embedCode.select();
+
+      document.execCommand(
+        "copy"
+      );
+    }
+  }
+);
 </script>
 
 </body>
 </html>`;
 }
 
-function widgetJs(
-  publicUrl: string
-) {
-  return `(()=>{
+/* =========================================================
+   WIDGET JS
+========================================================= */
 
-const s =
+function widgetJs(
+  requestUrl: string
+) {
+  const origin =
+    new URL(
+      requestUrl
+    ).origin;
+
+  return `(() => {
+
+const script =
   document.currentScript;
 
-const u =
-  new URL(s.src);
+if(!script){
+  return;
+}
 
-const id =
-  u.searchParams.get(
-    'bot_id'
-  ) || '';
-
-const f =
-  document.createElement(
-    'iframe'
+const botId =
+  new URL(
+    script.src
+  ).searchParams.get(
+    "bot"
   );
 
-f.src =
-  ${JSON.stringify(
-    publicUrl
-  )} +
-  '/widget?bot_id=' +
-  encodeURIComponent(id);
+if(!botId){
+  console.error(
+    "Gen-Solution: bot ID missing."
+  );
+  return;
+}
 
-Object.assign(
-  f.style,
-  {
-    position:'fixed',
-    right:'18px',
-    bottom:'18px',
-    width:'390px',
-    height:'650px',
-    maxWidth:'calc(100vw - 24px)',
-    maxHeight:'calc(100vh - 24px)',
-    border:'0',
-    borderRadius:'18px',
-    boxShadow:'0 10px 40px #0003',
-    zIndex:'2147483647',
-    background:'transparent'
-  }
+const origin =
+  ${JSON.stringify(origin)};
+
+const iframe =
+  document.createElement(
+    "iframe"
+  );
+
+iframe.src =
+  origin +
+  "/widget?bot=" +
+  encodeURIComponent(
+    botId
+  );
+
+iframe.title =
+  "AI Website Assistant";
+
+iframe.style.position =
+  "fixed";
+
+iframe.style.right =
+  "18px";
+
+iframe.style.bottom =
+  "18px";
+
+iframe.style.width =
+  "390px";
+
+iframe.style.height =
+  "620px";
+
+iframe.style.maxWidth =
+  "calc(100vw - 24px)";
+
+iframe.style.maxHeight =
+  "calc(100vh - 24px)";
+
+iframe.style.border =
+  "0";
+
+iframe.style.zIndex =
+  "2147483647";
+
+iframe.style.background =
+  "transparent";
+
+iframe.style.borderRadius =
+  "18px";
+
+iframe.style.boxShadow =
+  "0 15px 50px rgba(0,0,0,.18)";
+
+iframe.setAttribute(
+  "allow",
+  "clipboard-write"
 );
 
-f.title =
-  'AI Website Assistant';
-
-document.body.appendChild(f);
+document.body.appendChild(
+  iframe
+);
 
 })();`;
 }
 
-function widgetPage(
+/* =========================================================
+   WIDGET PAGE
+========================================================= */
+
+async function widgetPage(
+  env: Env,
   botId: string
 ) {
-  return `<!doctype html>
+  const d =
+    await mongo(
+      env.MONGODB_URI
+    );
+
+  const bot =
+    await d
+      .collection<Bot>(
+        "bots"
+      )
+      .findOne({
+        botId
+      });
+
+  if(
+    !bot
+  ){
+    return html(
+      "Bot not found.",
+      404
+    );
+  }
+
+  const title =
+    bot.title ||
+    "Website Assistant";
+
+  return html(
+`<!doctype html>
 <html>
-
 <head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 
-<meta
-  name="viewport"
-  content="width=device-width,initial-scale=1"
->
+<title>${escapeHtml(title)}</title>
 
 <style>
 
 *{
-  box-sizing:border-box
+  box-sizing:border-box;
 }
 
+html,
 body{
   margin:0;
+  width:100%;
+  height:100%;
+  overflow:hidden;
   font-family:Inter,Arial,sans-serif;
-  background:transparent
+  background:transparent;
 }
 
-.box{
-  height:100vh;
-  background:#fff;
-  border-radius:18px;
+.app{
+  width:100%;
+  height:100%;
   display:flex;
   flex-direction:column;
+  background:white;
+  border-radius:18px;
   overflow:hidden;
-  box-shadow:0 8px 35px #0002
 }
 
-.head{
-  padding:15px 17px;
+.header{
+  padding:16px;
   background:#111827;
-  color:#fff;
-  font-weight:700
+  color:white;
 }
 
-.sub{
-  font-size:11px;
-  opacity:.7;
-  font-weight:400;
-  margin-top:3px
+.headerTitle{
+  font-size:16px;
+  font-weight:800;
 }
 
-.msgs{
+.headerSub{
+  font-size:12px;
+  opacity:.75;
+  margin-top:3px;
+}
+
+.messages{
   flex:1;
   overflow:auto;
   padding:14px;
-  background:#f8fafc
+  background:#f9fafb;
 }
 
-.m{
-  max-width:85%;
-  padding:10px 12px;
+.message{
+  max-width:88%;
+  padding:11px 13px;
   border-radius:13px;
-  margin:7px 0;
-  line-height:1.45;
+  margin-bottom:10px;
   font-size:14px;
-  white-space:pre-wrap
+  line-height:1.5;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
 }
 
-.a{
-  background:#fff;
-  border:1px solid #e5e7eb
-}
-
-.u{
+.user{
+  margin-left:auto;
   background:#111827;
-  color:#fff;
-  margin-left:auto
+  color:white;
+  border-bottom-right-radius:4px;
 }
 
-.foot{
-  padding:10px;
+.bot{
+  margin-right:auto;
+  background:white;
+  border:1px solid #e5e7eb;
+  color:#111827;
+  border-bottom-left-radius:4px;
+}
+
+.sources{
+  margin-top:9px;
+  padding-top:8px;
   border-top:1px solid #e5e7eb;
-  display:flex;
-  gap:7px
 }
 
-.foot input{
-  flex:1;
+.source{
+  display:block;
+  font-size:12px;
+  color:#2563eb;
+  text-decoration:none;
+  margin-top:5px;
+}
+
+.source:hover{
+  text-decoration:underline;
+}
+
+.inputArea{
+  display:flex;
+  gap:8px;
   padding:11px;
+  border-top:1px solid #e5e7eb;
+  background:white;
+}
+
+.input{
+  flex:1;
+  min-width:0;
   border:1px solid #d1d5db;
   border-radius:10px;
-  outline:0
+  padding:11px;
+  font-size:14px;
+  outline:none;
 }
 
-.foot button{
-  width:70px;
+.send{
   border:0;
   border-radius:10px;
+  padding:0 15px;
   background:#111827;
-  color:#fff
+  color:white;
+  font-weight:700;
+  cursor:pointer;
 }
 
-.src{
-  font-size:11px;
-  margin-top:7px
-}
-
-.src a{
-  color:#2563eb
+.send:disabled{
+  opacity:.5;
 }
 
 </style>
-
 </head>
 
 <body>
 
-<div class="box">
+<div class="app">
 
-<div class="head">
-AI Website Assistant
+<div class="header">
+  <div class="headerTitle">
+    ${escapeHtml(title)}
+  </div>
 
-<div class="sub">
-Ask about this website
-</div>
-
+  <div class="headerSub">
+    Ask questions about this website
+  </div>
 </div>
 
 <div
-  id="m"
-  class="msgs"
+  id="messages"
+  class="messages"
 >
-
-<div class="m a">
-Hi! How can I help you?
-</div>
-
+  <div class="message bot">
+    Hi! How can I help you?
+  </div>
 </div>
 
 <form
-  id="f"
-  class="foot"
+  id="form"
+  class="inputArea"
 >
 
 <input
-  id="q"
+  id="input"
+  class="input"
   autocomplete="off"
   placeholder="Ask a question..."
->
+/>
 
-<button>
+<button
+  id="send"
+  class="send"
+  type="submit"
+>
 Send
 </button>
 
@@ -2224,585 +2903,728 @@ Send
 
 <script>
 
-const bot =
+const messages =
+  document.getElementById(
+    "messages"
+  );
+
+const form =
+  document.getElementById(
+    "form"
+  );
+
+const input =
+  document.getElementById(
+    "input"
+  );
+
+const send =
+  document.getElementById(
+    "send"
+  );
+
+const botId =
   ${JSON.stringify(botId)};
 
-const m =
-  document.getElementById(
-    'm'
-  );
-
-const q =
-  document.getElementById(
-    'q'
-  );
-
-document.getElementById(
-  'f'
-).onsubmit = async e => {
-
-  e.preventDefault();
-
-  const v =
-    q.value.trim();
-
-  if(!v){
-    return;
-  }
-
-  add(
-    v,
-    'u'
-  );
-
-  q.value = '';
-
-  const t =
-    add(
-      'Thinking...',
-      'a'
-    );
-
-  try{
-
-    const r =
-      await fetch(
-        '/api/chat',
-        {
-          method:'POST',
-
-          headers:{
-            'content-type':
-              'application/json'
-          },
-
-          body:JSON.stringify({
-            botId:bot,
-            question:v
-          })
-        }
-      );
-
-    const j =
-      await r.json();
-
-    t.remove();
-
-    if(!r.ok){
-
-      add(
-        j.error ||
-        'I could not process that right now.',
-        'a'
-      );
-
-      return;
-    }
-
-    add(
-      j.answer ||
-      'I could not process that right now.',
-      'a',
-      j.sources
-    );
-
-  }catch{
-
-    t.remove();
-
-    add(
-      'I could not process that right now. Please try again.',
-      'a'
-    );
-  }
-};
-
-function add(
-  x,
-  c,
+function addMessage(
+  text,
+  type,
   sources
 ){
 
-  const d =
+  const div =
     document.createElement(
-      'div'
+      "div"
     );
 
-  d.className =
-    'm ' + c;
+  div.className =
+    "message " +
+    type;
 
-  d.textContent =
-    x;
+  div.textContent =
+    text;
 
   if(
     sources &&
     sources.length
   ){
 
-    const z =
+    const box =
       document.createElement(
-        'div'
+        "div"
       );
 
-    z.className =
-      'src';
+    box.className =
+      "sources";
 
     sources.forEach(
-      a => {
+      source => {
 
-        const l =
+        const link =
           document.createElement(
-            'a'
+            "a"
           );
 
-        l.href =
-          a.url;
+        link.className =
+          "source";
 
-        l.target =
-          '_blank';
+        link.href =
+          source.url;
 
-        l.rel =
-          'noopener';
+        link.target =
+          "_blank";
 
-        l.textContent =
-          a.title ||
-          'Source';
+        link.rel =
+          "noopener noreferrer";
 
-        z.appendChild(l);
+        link.textContent =
+          (
+            source.type ===
+            "pdf"
+              ? "PDF: "
+              : "Source: "
+          ) +
+          source.title;
 
-        z.appendChild(
-          document.createTextNode(
-            ' · '
-          )
+        box.appendChild(
+          link
         );
       }
     );
 
-    d.appendChild(z);
+    div.appendChild(
+      box
+    );
   }
 
-  m.appendChild(d);
+  messages.appendChild(
+    div
+  );
 
-  m.scrollTop =
-    m.scrollHeight;
-
-  return d;
+  messages.scrollTop =
+    messages.scrollHeight;
 }
+
+form.addEventListener(
+  "submit",
+  async event => {
+
+    event.preventDefault();
+
+    const question =
+      input.value.trim();
+
+    if(!question){
+      return;
+    }
+
+    addMessage(
+      question,
+      "user"
+    );
+
+    input.value =
+      "";
+
+    send.disabled =
+      true;
+
+    const loading =
+      document.createElement(
+        "div"
+      );
+
+    loading.className =
+      "message bot";
+
+    loading.textContent =
+      "Thinking...";
+
+    messages.appendChild(
+      loading
+    );
+
+    messages.scrollTop =
+      messages.scrollHeight;
+
+    try{
+
+      const response =
+        await fetch(
+          "/api/chat",
+          {
+            method:"POST",
+            headers:{
+              "content-type":
+                "application/json"
+            },
+            body:
+              JSON.stringify({
+                botId,
+                question
+              })
+          }
+        );
+
+      const text =
+        await response.text();
+
+      if(!response.ok){
+        throw new Error(
+          "HTTP " +
+          response.status
+        );
+      }
+
+      const data =
+        JSON.parse(text);
+
+      loading.remove();
+
+      addMessage(
+        data.answer ||
+        "I couldn't find that information on the website.",
+        "bot",
+        data.sources ||
+        []
+      );
+
+    }catch(error){
+
+      loading.textContent =
+        "Sorry, something went wrong. Please try again.";
+
+    }finally{
+
+      send.disabled =
+        false;
+
+      input.focus();
+    }
+  }
+);
 
 </script>
 
 </body>
-
-</html>`;
+</html>`
+  );
 }
 
+/* =========================================================
+   ESCAPE HTML
+========================================================= */
+
+function escapeHtml(
+  value: string
+) {
+  return value
+    .replace(
+      /&/g,
+      "&amp;"
+    )
+    .replace(
+      /</g,
+      "&lt;"
+    )
+    .replace(
+      />/g,
+      "&gt;"
+    )
+    .replace(
+      /"/g,
+      "&quot;"
+    )
+    .replace(
+      /'/g,
+      "&#039;"
+    );
+}
+
+/* =========================================================
+   MAIN WORKER
+========================================================= */
+
 export default {
-
   async fetch(
-    req: Request,
+    request: Request,
     env: Env
-  ) {
+  ): Promise<Response> {
 
-    try {
+    const url =
+      new URL(
+        request.url
+      );
 
-      const u =
-        new URL(req.url);
+    const pathname =
+      url.pathname;
 
-      /*
-        CORS preflight
-      */
-      if (
-        req.method ===
-        "OPTIONS"
-      ) {
+    /*
+      OPTIONS
+    */
 
+    if (
+      request.method ===
+      "OPTIONS"
+    ) {
+      return new Response(
+        null,
+        {
+          status:204,
+          headers:{
+            "access-control-allow-origin":
+              "*",
+            "access-control-allow-methods":
+              "GET,POST,OPTIONS",
+            "access-control-allow-headers":
+              "content-type,x-admin-key"
+          }
+        }
+      );
+    }
+
+    /*
+      HEALTH
+    */
+
+    if (
+      pathname ===
+      "/health"
+    ) {
+      return json({
+        ok:true,
+        service:
+          "gen-solution",
+        time:
+          now()
+      });
+    }
+
+    /*
+      ADMIN HOME
+    */
+
+    if (
+      pathname ===
+      "/"
+    ) {
+      if(
+        !admin(
+          request,
+          env
+        )
+      ){
         return new Response(
-          null,
+          "Unauthorized",
           {
-            headers:{
-              "access-control-allow-origin":
-                "*",
-
-              "access-control-allow-headers":
-                "content-type,x-admin-key",
-
-              "access-control-allow-methods":
-                "GET,POST,OPTIONS"
-            }
+            status:401
           }
         );
       }
 
-      /*
-        Health check
-      */
-      if (
-        u.pathname ===
-        "/health"
-      ) {
+      return html(
+        adminHtml()
+      );
+    }
+
+    /*
+      WIDGET JS
+    */
+
+    if (
+      pathname ===
+      "/widget.js"
+    ) {
+      return new Response(
+        widgetJs(
+          request.url
+        ),
+        {
+          headers:{
+            "content-type":
+              "application/javascript; charset=utf-8",
+            "cache-control":
+              "public,max-age=300"
+          }
+        }
+      );
+    }
+
+    /*
+      WIDGET
+    */
+
+    if (
+      pathname ===
+      "/widget"
+    ) {
+      const botId =
+        url.searchParams.get(
+          "bot"
+        );
+
+      if(
+        !botId
+      ){
+        return html(
+          "Missing bot.",
+          400
+        );
+      }
+
+      try{
+        return await widgetPage(
+          env,
+          botId
+        );
+      }catch(error){
+        return html(
+          "Widget error: " +
+          (
+            error instanceof Error
+              ? error.message
+              : String(error)
+          ),
+          500
+        );
+      }
+    }
+
+    /*
+      ADMIN BUILD
+      Creates job ONLY.
+      It does not crawl here.
+    */
+
+    if (
+      pathname ===
+        "/api/admin/build" &&
+      request.method ===
+        "POST"
+    ) {
+
+      if(
+        !admin(
+          request,
+          env
+        )
+      ){
+        return json(
+          {
+            ok:false,
+            error:
+              "Unauthorized"
+          },
+          401
+        );
+      }
+
+      try{
+
+        const body =
+          await request.json()
+            as {
+              url?: string;
+            };
+
+        if(
+          !body.url
+        ){
+          return json(
+            {
+              ok:false,
+              error:
+                "Website URL is required."
+            },
+            400
+          );
+        }
+
+        const siteUrl =
+          cleanUrl(
+            body.url
+          );
+
+        if(
+          !siteUrl
+        ){
+          return json(
+            {
+              ok:false,
+              error:
+                "Invalid website URL."
+            },
+            400
+          );
+        }
+
+        if(
+          privateHost(
+            host(
+              siteUrl
+            )
+          )
+        ){
+          return json(
+            {
+              ok:false,
+              error:
+                "Private/local URLs are not allowed."
+            },
+            400
+          );
+        }
+
+        const result =
+          await seedJob(
+            env,
+            siteUrl
+          );
 
         return json({
           ok:true,
-          service:
-            "gen-solution",
-          version:"5.1",
-          time:now()
+          jobId:
+            result.job.jobId,
+          botId:
+            result.bot.botId
         });
-      }
 
-      /*
-        Admin page
-      */
-      if (
-        u.pathname ===
-          "/" &&
-        req.method ===
-          "GET"
-      ) {
+      }catch(error){
 
-        return new Response(
-          adminHtml(),
+        return json(
           {
-            headers:{
-              "content-type":
-                "text/html;charset=utf-8"
-            }
-          }
+            ok:false,
+            error:
+              error instanceof Error
+                ? error.message
+                : String(error)
+          },
+          500
+        );
+      }
+    }
+
+    /*
+      ADMIN JOB STATUS
+      IMPORTANT:
+      This endpoint performs NO crawling.
+    */
+
+    if (
+      pathname.startsWith(
+        "/api/admin/job/"
+      ) &&
+      request.method ===
+        "GET"
+    ) {
+
+      if(
+        !admin(
+          request,
+          env
+        )
+      ){
+        return json(
+          {
+            ok:false,
+            error:
+              "Unauthorized"
+          },
+          401
         );
       }
 
-      /*
-        Widget JavaScript
-      */
-      if (
-        u.pathname ===
-        "/widget.js"
-      ) {
+      const jobId =
+        pathname
+          .split("/")
+          .pop();
 
-        return new Response(
-          widgetJs(
-            env.PUBLIC_URL ||
-              u.origin
-          ),
+      if(
+        !jobId
+      ){
+        return json(
           {
-            headers:{
-              "content-type":
-                "application/javascript;charset=utf-8",
-
-              "cache-control":
-                "public,max-age=300"
-            }
-          }
+            ok:false,
+            error:
+              "Job ID missing."
+          },
+          400
         );
       }
 
-      /*
-        Widget iframe
-      */
-      if (
-        u.pathname ===
-        "/widget"
-      ) {
-
-        const botId =
-          u.searchParams.get(
-            "bot_id"
-          ) || "";
-
-        return new Response(
-          widgetPage(botId),
-          {
-            headers:{
-              "content-type":
-                "text/html;charset=utf-8",
-
-              "content-security-policy":
-                "default-src 'self' https:; frame-ancestors *"
-            }
-          }
-        );
-      }
-
-      /*
-        START BUILD
-
-        IMPORTANT:
-        We DO NOT call buildStep here.
-
-        This returns immediately.
-        The browser then calls /api/admin/job/:id
-        repeatedly and each call processes one page.
-      */
-      if (
-        u.pathname ===
-          "/api/admin/build" &&
-        req.method ===
-          "POST"
-      ) {
-
-        if (
-          !admin(req,env)
-        ) {
-
-          return json(
-            {
-              error:
-                "Unauthorized"
-            },
-            401
-          );
-        }
-
-        let body:any;
-
-        try {
-
-          body =
-            await req.json();
-
-        } catch {
-
-          return json(
-            {
-              error:
-                "Invalid JSON request"
-            },
-            400
-          );
-        }
-
-        const seed =
-          cleanUrl(
-            String(
-              body?.url ||
-                ""
-            ).trim()
-          );
-
-        if (!seed) {
-
-          return json(
-            {
-              error:
-                "Valid website URL required"
-            },
-            400
-          );
-        }
-
-        if (
-          privateHost(
-            host(seed)
-          )
-        ) {
-
-          return json(
-            {
-              error:
-                "Private/local URLs are not allowed"
-            },
-            400
-          );
-        }
+      try{
 
         const d =
           await mongo(
             env.MONGODB_URI
           );
 
-        await ensureIndexes(
-          d
-        );
-
-        const botId =
-          id();
-
         const job =
-          await seedJob(
-            d,
-            seed,
-            botId
-          );
+          await d
+            .collection<Job>(
+              "jobs"
+            )
+            .findOne({
+              jobId
+            });
 
-        /*
-          Return immediately.
-          Do NOT crawl here.
-        */
-        return json({
-          ok:true,
-          jobId:
-            job.jobId,
-          botId
-        });
-      }
-
-      /*
-        BUILD STATUS + NEXT CRAWL STEP
-
-        Every call performs one crawl step.
-      */
-      if (
-        u.pathname.startsWith(
-          "/api/admin/job/"
-        ) &&
-        req.method ===
-          "GET"
-      ) {
-
-        if (
-          !admin(req,env)
-        ) {
-
+        if(
+          !job
+        ){
           return json(
             {
+              ok:false,
               error:
-                "Unauthorized"
-            },
-            401
-          );
-        }
-
-        const jobId =
-          u.pathname.slice(
-            "/api/admin/job/"
-              .length
-          );
-
-        if (!jobId) {
-
-          return json(
-            {
-              error:
-                "Job ID required"
-            },
-            400
-          );
-        }
-
-        const j =
-          await buildStep(
-            env,
-            jobId
-          );
-
-        if (!j) {
-
-          return json(
-            {
-              error:
-                "Job not found"
+                "Job not found."
             },
             404
           );
         }
 
         return json({
-          jobId:
-            j.jobId,
-
-          botId:
-            j.botId,
-
-          stage:
-            j.stage,
-
-          done:
-            j.done,
-
-          pages:
-            j.pages,
-
-          /*
-            PDFs are NOT processed.
-          */
-          pdfs:0,
-
-          chunks:
-            j.chunks,
-
-          queuedPages:
-            j.queue.length,
-
-          queuedPdfs:0,
-
-          pdfLinks:
-            j.pdfLinks.length,
-
-          errors:
-            j.errors.slice(
-              -8
-            ),
-
-          embedScript:
-            j.done
-              ? `<script src="${env.PUBLIC_URL || u.origin}/widget.js?bot_id=${j.botId}" async></script>`
-              : null
+          ok:true,
+          job
         });
+
+      }catch(error){
+
+        return json(
+          {
+            ok:false,
+            error:
+              error instanceof Error
+                ? error.message
+                : String(error)
+          },
+          500
+        );
+      }
+    }
+
+    /*
+      ADMIN STEP
+      Performs exactly ONE small operation.
+    */
+
+    if (
+      pathname.startsWith(
+        "/api/admin/step/"
+      ) &&
+      request.method ===
+        "POST"
+    ) {
+
+      if(
+        !admin(
+          request,
+          env
+        )
+      ){
+        return json(
+          {
+            ok:false,
+            error:
+              "Unauthorized"
+          },
+          401
+        );
       }
 
-      /*
-        CHAT
-      */
-      if (
-        u.pathname ===
-          "/api/chat" &&
-        req.method ===
-          "POST"
-      ) {
+      const jobId =
+        pathname
+          .split("/")
+          .pop();
 
-        let body:any;
+      if(
+        !jobId
+      ){
+        return json(
+          {
+            ok:false,
+            error:
+              "Job ID missing."
+          },
+          400
+        );
+      }
 
-        try {
+      try{
 
-          body =
-            await req.json();
-
-        } catch {
-
-          return json(
-            {
-              error:
-                "Invalid JSON request"
-            },
-            400
+        const job =
+          await buildStep(
+            env,
+            jobId
           );
-        }
+
+        return json({
+          ok:true,
+          job
+        });
+
+      }catch(error){
+
+        return json(
+          {
+            ok:false,
+            error:
+              error instanceof Error
+                ? error.message
+                : String(error)
+          },
+          500
+        );
+      }
+    }
+
+    /*
+      CHAT
+    */
+
+    if (
+      pathname ===
+        "/api/chat" &&
+      request.method ===
+        "POST"
+    ) {
+
+      try{
+
+        const body =
+          await request.json()
+            as {
+              botId?: string;
+              question?: string;
+            };
 
         const botId =
-          String(
-            body?.botId ||
-              ""
-          ).trim();
+          body.botId?.trim();
 
         const question =
-          String(
-            body?.question ||
-              ""
-          ).trim();
+          body.question?.trim();
 
-        if (
+        if(
           !botId ||
           !question
-        ) {
-
+        ){
           return json(
             {
+              ok:false,
               error:
-                "botId and question required"
+                "botId and question are required."
             },
             400
           );
         }
 
-        if (
+        if(
           question.length >
           1000
-        ) {
-
+        ){
           return json(
             {
+              ok:false,
               error:
-                "Question is too long"
+                "Question is too long."
             },
             400
           );
@@ -2812,10 +3634,6 @@ export default {
           await mongo(
             env.MONGODB_URI
           );
-
-        await ensureIndexes(
-          d
-        );
 
         const bot =
           await d
@@ -2826,29 +3644,29 @@ export default {
               botId
             });
 
-        if (!bot) {
-
+        if(
+          !bot
+        ){
           return json(
             {
+              ok:false,
               error:
-                "Chatbot not found"
+                "Bot not found."
             },
             404
           );
         }
 
-        if (
+        if(
           bot.status !==
           "ready"
-        ) {
-
-          return json(
-            {
-              error:
-                "Chatbot is still building"
-            },
-            409
-          );
+        ){
+          return json({
+            ok:true,
+            answer:
+              "The website knowledge base is still being built. Please try again shortly.",
+            sources:[]
+          });
         }
 
         const result =
@@ -2858,31 +3676,35 @@ export default {
             question
           );
 
+        return json({
+          ok:true,
+          ...result
+        });
+
+      }catch(error){
+
         return json(
-          result
+          {
+            ok:false,
+            error:
+              error instanceof Error
+                ? error.message
+                : String(error)
+          },
+          500
         );
       }
-
-      return new Response(
-        "Not found",
-        {
-          status:404
-        }
-      );
-
-    } catch (e) {
-
-      return json(
-        {
-          error:
-            String(e).slice(
-              0,
-              500
-            )
-        },
-        500
-      );
     }
-  }
 
+    return new Response(
+      "Not Found",
+      {
+        status:404,
+        headers:{
+          "content-type":
+            "text/plain; charset=utf-8"
+        }
+      }
+    );
+  }
 };
