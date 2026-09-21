@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Felt / wool texture filter -->
+    <filter id="feltNoise" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="3" result="noise" />
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.18 0" result="coloredNoise" />
+      <feComposite in="SourceGraphic" in2="coloredNoise" operator="in" />
+    </filter>
+
+    <!-- Head 3D Lighting -->
+    <radialGradient id="headLight" cx="38%" cy="32%" r="70%">
+      <stop offset="0%" stop-color="#629DF8" />
+      <stop offset="35%" stop-color="#3C7CE6" />
+      <stop offset="70%" stop-color="#2764D0" />
+      <stop offset="100%" stop-color="#1848A8" />
+    </radialGradient>
+
+    <!-- Antenna Ball Lighting -->
+    <radialGradient id="ballLight" cx="35%" cy="30%" r="65%">
+      <stop offset="0%" stop-color="#78ADFC" />
+      <stop offset="40%" stop-color="#3B7DE8" />
+      <stop offset="85%" stop-color="#2055BD" />
+      <stop offset="100%" stop-color="#163F96" />
+    </radialGradient>
+
+    <!-- Left Ear Lighting -->
+    <linearGradient id="leftEarGrad" x1="0%" y1="30%" x2="100%" y2="70%">
+      <stop offset="0%" stop-color="#2E6BC9" />
+      <stop offset="40%" stop-color="#4B88EC" />
+      <stop offset="100%" stop-color="#1E4DA8" />
+    </linearGradient>
+
+    <!-- Right Ear Lighting -->
+    <linearGradient id="rightEarGrad" x1="0%" y1="30%" x2="100%" y2="70%">
+      <stop offset="0%" stop-color="#1E4DA8" />
+      <stop offset="60%" stop-color="#4B88EC" />
+      <stop offset="100%" stop-color="#2E6BC9" />
+    </linearGradient>
+
+    <!-- Antenna Stem Gradient -->
+    <linearGradient id="stemGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1F232B" />
+      <stop offset="50%" stop-color="#3E4452" />
+      <stop offset="100%" stop-color="#14171D" />
+    </linearGradient>
+
+    <!-- Soft Depth Shadow -->
+    <filter id="dropDepth" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#081B44" flood-opacity="0.32" />
+    </filter>
+
+    <!-- Ear Occlusion Shadow -->
+    <filter id="earOcclusion" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0A1D46" flood-opacity="0.45" />
+    </filter>
+
+    <!-- Eye 3D Pop -->
+    <filter id="eyePop" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2.5" stdDeviation="2.5" flood-color="#0D2456" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- Side Ear Protrusions (Behind Head) -->
+  <!-- Left Ear -->
+  <rect x="18" y="116" width="28" height="46" rx="14" fill="url(#leftEarGrad)" filter="url(#earOcclusion)" />
+  <!-- Right Ear -->
+  <rect x="210" y="116" width="28" height="46" rx="14" fill="url(#rightEarGrad)" filter="url(#earOcclusion)" />
+
+  <!-- Antenna Stem -->
+  <rect x="122" y="32" width="12" height="34" rx="6" fill="url(#stemGrad)" />
+
+  <!-- Antenna Ball on Top -->
+  <circle cx="128" cy="28" r="18" fill="url(#ballLight)" filter="url(#dropDepth)" />
+  <circle cx="122" cy="22" r="5" fill="#FFFFFF" opacity="0.45" />
+
+  <!-- Main Head Cube with Felt Clay 3D Aesthetic -->
+  <rect x="34" y="56" width="188" height="172" rx="50" fill="url(#headLight)" filter="url(#dropDepth)" />
+
+  <!-- Soft Head Inner Highlight Arc -->
+  <path d="M 74 62 Q 128 58 182 62" stroke="#8FBCFF" stroke-width="4" stroke-linecap="round" opacity="0.55" fill="none" />
+
+  <!-- Tactile Felt Texture Overlay -->
+  <rect x="34" y="56" width="188" height="172" rx="50" fill="#FFFFFF" opacity="0.05" filter="url(#feltNoise)" />
+
+  <!-- Left Eye -->
+  <g filter="url(#eyePop)">
+    <!-- White Eye -->
+    <circle cx="92" cy="150" r="23" fill="#FFFFFF" />
+    <!-- Pupil -->
+    <circle cx="94" cy="150" r="14.5" fill="#161A20" />
+    <!-- Specular Highlight -->
+    <circle cx="90" cy="145.5" r="4.5" fill="#FFFFFF" />
+  </g>
+
+  <!-- Right Eye -->
+  <g filter="url(#eyePop)">
+    <!-- White Eye -->
+    <circle cx="164" cy="150" r="23" fill="#FFFFFF" />
+    <!-- Pupil -->
+    <circle cx="162" cy="150" r="14.5" fill="#161A20" />
+    <!-- Specular Highlight -->
+    <circle cx="158" cy="145.5" r="4.5" fill="#FFFFFF" />
+  </g>
+
+  <!-- Friendly Curved Black Smile Mouth -->
+  <path d="M 109 184 Q 128 200 147 184" fill="#161A20" stroke="#161A20" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 111 184 C 111 198, 145 198, 145 184 Z" fill="#161A20" />
+</svg>

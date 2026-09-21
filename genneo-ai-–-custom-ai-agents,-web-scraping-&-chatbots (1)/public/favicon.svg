@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <radialGradient id="favBg" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#0F3B36" />
+      <stop offset="100%" stop-color="#002D29" />
+    </radialGradient>
+    <radialGradient id="botHead" cx="38%" cy="32%" r="70%">
+      <stop offset="0%" stop-color="#629DF8" />
+      <stop offset="35%" stop-color="#3C7CE6" />
+      <stop offset="70%" stop-color="#2764D0" />
+      <stop offset="100%" stop-color="#1848A8" />
+    </radialGradient>
+    <radialGradient id="botBall" cx="35%" cy="30%" r="65%">
+      <stop offset="0%" stop-color="#78ADFC" />
+      <stop offset="40%" stop-color="#3B7DE8" />
+      <stop offset="100%" stop-color="#163F96" />
+    </radialGradient>
+  </defs>
+
+  <!-- Background rounded frame -->
+  <rect width="64" height="64" rx="16" fill="url(#favBg)" />
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="none" stroke="#004741" stroke-width="1.5" />
+
+  <!-- Robot Ears -->
+  <rect x="8" y="29" width="6" height="12" rx="3" fill="#2E6BC9" />
+  <rect x="50" y="29" width="6" height="12" rx="3" fill="#2E6BC9" />
+
+  <!-- Robot Antenna -->
+  <rect x="30.5" y="8" width="3" height="8" rx="1.5" fill="#1F232B" />
+  <circle cx="32" cy="7.5" r="4.5" fill="url(#botBall)" />
+
+  <!-- Robot Head -->
+  <rect x="12" y="14" width="40" height="38" rx="12" fill="url(#botHead)" />
+
+  <!-- Eyes -->
+  <circle cx="24" cy="34" r="5.5" fill="#FFFFFF" />
+  <circle cx="24.5" cy="34" r="3.5" fill="#161A20" />
+  <circle cx="23.5" cy="33" r="1.2" fill="#FFFFFF" />
+
+  <circle cx="40" cy="34" r="5.5" fill="#FFFFFF" />
+  <circle cx="39.5" cy="34" r="3.5" fill="#161A20" />
+  <circle cx="38.5" cy="33" r="1.2" fill="#FFFFFF" />
+
+  <!-- Mouth -->
+  <path d="M 28 42 Q 32 46 36 42" fill="none" stroke="#161A20" stroke-width="2" stroke-linecap="round" />
+</svg>

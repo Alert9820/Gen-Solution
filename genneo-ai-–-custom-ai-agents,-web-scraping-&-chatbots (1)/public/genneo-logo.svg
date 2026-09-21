@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 280" width="520" height="280">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800;900&amp;display=swap');
+      .font-main {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+        font-weight: 800;
+      }
+      .font-neo {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+      }
+    </style>
+  </defs>
+
+  <!-- Left Emblem Group: Circle with G and Neo nested -->
+  <g transform="translate(30, 20)">
+    <!-- Dark circular base -->
+    <circle cx="120" cy="120" r="100" fill="#162422" />
+
+    <!-- White curved cutout / C shape forming the halo and G boundary -->
+    <!-- Outer white crescent path -->
+    <path d="M 180 62 C 105 18, 30 75, 42 145 C 50 190, 85 220, 138 220 C 168 220, 192 205, 198 185 C 175 198, 150 200, 128 195 C 80 185, 60 145, 75 105 C 88 70, 135 48, 180 62 Z" fill="#FFFFFF" />
+
+    <!-- Solid white background area for inner G and Neo -->
+    <path d="M 175 66 C 110 32, 52 80, 60 140 C 66 182, 100 216, 142 216 C 172 216, 192 200, 196 178 C 175 192, 150 195, 128 190 C 88 180, 72 145, 84 110 C 96 78, 135 60, 175 66 Z" fill="#FFFFFF" />
+
+    <!-- Inner G: Capital bold G in black/dark -->
+    <!-- Inner G curve and crossbar -->
+    <path d="M 148 88 C 118 80, 88 102, 94 134 C 98 156, 118 172, 142 168 C 158 165, 166 154, 168 140 L 126 140 L 126 118 L 178 118 C 180 145, 168 180, 136 186 C 102 192, 74 165, 72 130 C 70 94, 102 68, 146 72 C 160 74, 172 80, 180 88 L 160 102 C 156 94, 148 90, 138 90 Z" fill="#162422" />
+
+    <!-- Nested 'Neo' text under the G crossbar in bold black -->
+    <text x="136" y="182" font-size="24" fill="#162422" class="font-neo" text-anchor="middle">Neo</text>
+  </g>
+
+  <!-- Right 'en' text in heavy bold matching G (1).png -->
+  <!-- Note how 'en' in G (1).png sits right next to the G circle, creating 'Gen' -->
+  <text x="245" y="186" font-size="140" fill="#162422" class="font-main" letter-spacing="-6px">en</text>
+</svg>

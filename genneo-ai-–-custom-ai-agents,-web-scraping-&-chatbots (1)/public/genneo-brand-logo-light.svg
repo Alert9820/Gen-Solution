@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 240" width="540" height="240">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800;900&amp;display=swap');
+      .font-main {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+        font-weight: 800;
+      }
+      .font-neo {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+        font-weight: 800;
+      }
+    </style>
+  </defs>
+
+  <!-- Left Emblem Group: Circle with nested G and Neo -->
+  <g transform="translate(15, 15)">
+    <!-- Outer Dark Circle -->
+    <circle cx="105" cy="105" r="98" fill="#1F3532" />
+
+    <!-- White Inner Cutout / G-contour background -->
+    <path d="
+      M 160 52
+      C 95 18, 32 68, 40 132
+      C 48 182, 92 208, 146 205
+      C 176 203, 196 186, 198 165
+      C 175 178, 150 182, 126 178
+      C 82 170, 64 135, 74 100
+      C 86 64, 130 46, 172 58
+      Z" fill="#FFFFFF" />
+
+    <!-- Center White Field for G and Neo -->
+    <circle cx="118" cy="112" r="68" fill="#FFFFFF" />
+
+    <!-- Bold G Inner Core -->
+    <path d="
+      M 148 76
+      C 120 68, 92 86, 96 116
+      C 100 138, 120 152, 142 148
+      C 152 146, 158 138, 160 126
+      L 125 126
+      L 125 106
+      L 178 106
+      C 179 128, 170 162, 138 168
+      C 104 174, 76 150, 74 116
+      C 72 82, 102 54, 144 58
+      C 158 60, 170 66, 178 74
+      L 158 88
+      C 155 82, 148 78, 148 76
+      Z" fill="#FFFFFF" />
+
+    <!-- Nested 'Neo' word under the G bar -->
+    <text x="136" y="166" font-size="22" fill="#FFFFFF" class="font-neo" text-anchor="middle" letter-spacing="-0.5px">Neo</text>
+  </g>
+
+  <!-- Right 'en' word in strong geometric bold -->
+  <text x="228" y="168" font-size="138" fill="#FFFFFF" class="font-main" letter-spacing="-4px">en</text>
+</svg>

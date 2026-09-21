@@ -1,0 +1,6 @@
+{
+  "name": "GenNeo AI – Custom AI Agents, Web Scraping & Chatbots",
+  "description": "Custom AI agents engineered in 7–10 days. We scrape your website, train grounded RAG chatbots, and automate workflows with zero hallucinations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

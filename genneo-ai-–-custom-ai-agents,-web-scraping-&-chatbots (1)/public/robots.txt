@@ -1,0 +1,20 @@
+# Robots.txt for GenNeo AI (https://genneo.agency)
+# Custom AI Agents, Intelligent Web Scraping & Domain-Grounded Chatbots
+
+User-agent: *
+Allow: /
+Allow: /privacy
+Allow: /terms
+Allow: /favicon.svg
+Allow: /favicon.ico
+Allow: /og-image.png
+Allow: /og-image.svg
+
+# Protect private backend routes and server execution
+Disallow: /api/
+
+# Host specification
+Host: https://genneo.agency
+
+# XML Sitemap location
+Sitemap: https://genneo.agency/sitemap.xml

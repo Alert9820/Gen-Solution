@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" width="220" height="220">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800;900&amp;display=swap');
+      .font-neo {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+        font-weight: 800;
+      }
+    </style>
+  </defs>
+  <!-- Outer Dark Circle -->
+  <circle cx="110" cy="110" r="105" fill="#162422" />
+
+  <!-- White Inner Cutout / G-contour background -->
+  <path d="
+    M 165 54
+    C 100 20, 37 70, 45 134
+    C 53 184, 97 210, 151 207
+    C 181 205, 201 188, 203 167
+    C 180 180, 155 184, 131 180
+    C 87 172, 69 137, 79 102
+    C 91 66, 135 48, 177 60
+    Z" fill="#FFFFFF" />
+
+  <!-- Center White Field -->
+  <circle cx="123" cy="117" r="70" fill="#FFFFFF" />
+
+  <!-- Bold G Inner Core -->
+  <path d="
+    M 153 81
+    C 125 73, 97 91, 101 121
+    C 105 143, 125 157, 147 153
+    C 157 151, 163 143, 165 131
+    L 130 131
+    L 130 111
+    L 183 111
+    C 184 133, 175 167, 143 173
+    C 109 179, 81 155, 79 121
+    C 77 87, 107 59, 149 63
+    C 163 65, 175 71, 183 79
+    L 163 93
+    C 160 87, 153 83, 153 81
+    Z" fill="#162422" />
+
+  <!-- Nested 'Neo' word under the G bar -->
+  <text x="141" y="171" font-size="23" fill="#162422" class="font-neo" text-anchor="middle" letter-spacing="-0.5px">Neo</text>
+</svg>
